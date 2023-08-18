@@ -171,8 +171,8 @@ function T.test_slurm_debug()
     local enable_debug = true
     local function mock_debug_lvl() return enable_debug and 1 or 0 end
 
-    local slurm_debug = lunit.mock_function(clif_functions.slurm_debug, nil, { debug_lvl = mock_debug_lvl })
-    local slurm_debugf = lunit.mock_function(clif_functions.slurm_debugf, nil, { debug_lvl = mock_debug_lvl })
+    local slurm_debug = lunit.mock_function_upvalues(clif_functions.slurm_debug, { debug_lvl = mock_debug_lvl }, true)
+    local slurm_debugf = lunit.mock_function_upvalues(clif_functions.slurm_debugf, { debug_lvl = mock_debug_lvl }, true)
     local eq = lunit.test_eq_v
 
     slurm_log_debug_tbl = {}
