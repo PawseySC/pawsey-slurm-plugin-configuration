@@ -125,44 +125,47 @@ end
 
 -- Parse slurm strings of the form 'key=value,key=value,...' to table.
 -- Supply e.g. ':' as second argument to parse strings of the form 'key:value,...' etc.
+-- The third agument, key_pfx, is a prefix to be stripped from every key on
+-- parsing. Why does Slurm turn --gres=gpu:2,tmp:20G on the command-line into
+-- options['gres'] == 'gres/gpu:2,gres/tmp:20G'? Why does Slurm do anything?
 
-local function parse_csv_tbl(csv, key_sep)
+local function parse_csv_tbl(csv, key_sep, key_pfx)
     key_sep = key_sep or '='
+    key_pfx = key_pfx or ''
+
+    local function strip_pfx(s)
+        if key_pfx == '' then return s end
+        if string.sub(s, 1, string.len(key_pfx)) == key_pfx then
+            return string.sub(s, string.len(key_pfx)+1)
+        else
+            return s
+        end
+    end
+
     local tbl = {}
     for _, field in ipairs(tokenize(csv, ',')) do
         local k, v = table.unpack(tokenize(field, key_sep, 2))
-        if v == nil then table.insert(tbl, k)
-        else tbl[k] = v
+        if v == nil then table.insert(tbl, strip_pfx(k))
+        else tbl[strip_pfx(k)] = v
         end
     end
     return tbl
 end
 
-function pp(t, i)
-    i = i or ''
-    if type(t) ~= 'table' then return tostring(t) end
-    local s =  '{'
-    local j = 0
-    i = i .. ' '
-    for k,v in pairs(t) do
-        if type(k) ~= 'number' and tonumber(k) then k = '"' .. k .. '"' end
-        if j>0 then s = s .. '\n' .. i end
-        j = j + 1
-        s = s .. ' ' .. k .. ': ' .. pp(v, i .. string.rep(' ', string.len(k)+3))
-    end
-    if j>0 then return s .. ' }' else return s .. '}' end
-end
+-- Analagous to above, add key_pfx to keys when reassembling a csv field.
 
-local function collect_csv_tbl(tbl, key_sep)
+local function collect_csv_tbl(tbl, key_sep, key_pfx)
     key_sep = key_sep or '='
+    key_pfx = key_pfx or ''
+
     local csv = ''
     local field_sep = ''
 
     for k, v in pairs(tbl) do
         if type(k) == 'string' then
-            csv = csv .. field_sep .. k .. key_sep .. v
+            csv = csv .. field_sep .. key_pfx .. k .. key_sep .. v
         else
-            csv = csv .. field_sep .. v
+            csv = csv .. field_sep .. key_pfx .. v
         end
         field_sep = ','
     end
@@ -268,7 +271,7 @@ function slurm_cli_pre_submit(options, offset)
 
     -- A gres option, if present, may contain multiple comma-separated key:value fields that we will need to examine.
     local gres_options = {}
-    if not is_unset(options['gres']) then gres_options = parse_csv_tbl(options['gres'], ':') end
+    if not is_unset(options['gres']) then gres_options = parse_csv_tbl(options['gres'], ':', 'gres/') end
 
     -- Are we in srun that's being invoked inside an allocation?
     local is_srun_in_allocation = options['type'] == 'srun' and os.getenv('SLURM_JOB_PARTITION') ~= nil
@@ -367,7 +370,7 @@ function slurm_cli_pre_submit(options, offset)
             gres_options.gpu = gpus_per_node
             gres_options.tmp = max_tmp_str
 
-            options['gres'] = collect_csv_tbl(gres_options, ':')
+            options['gres'] = collect_csv_tbl(gres_options, ':', 'gres/')
         end
     end
 

@@ -119,6 +119,10 @@ function T.test_parse_csv_tbl()
 
     assert(eq({[1] = 'foo', [2] = 'bar', ['3'] = 'three', empty = '', fish = 'cake'},
         parse_csv_tbl('3=three,foo,bar,empty=,fish=cake')))
+
+    -- check prefix snipping, too
+    assert(eq({[1] = 'foo', [2] = 'bar', ['3'] = 'three', empty = '', fish = 'cake'},
+        parse_csv_tbl('3=three,xyz/foo,bar,empty=,xyz/fish=cake', '=', 'xyz/')))
 end
 
 function T.test_collect_csv_tbl()
@@ -140,6 +144,11 @@ function T.test_collect_csv_tbl()
     assert(eq(tbl_check, parse_csv_tbl(collect_csv_tbl(tbl_in))))
     assert(eq(tbl_check, parse_csv_tbl(collect_csv_tbl(tbl_in, ':'), ':')))
     assert(eq(tbl_check, parse_csv_tbl(collect_csv_tbl(tbl_in, '='), '=')))
+
+   -- and also check inserting prefixes
+    tbl_check = { ['xyz/foo'] = '4', 'xyz/quux', 'xyz/xyzzzy', ['xyz/bar'] = 'baz' }
+    assert(eq(tbl_check, parse_csv_tbl(collect_csv_tbl(tbl_in, ':', 'xyz/'), ':')))
+    assert(eq(tbl_check, parse_csv_tbl(collect_csv_tbl(tbl_in, '=', 'xyz/'), '=')))
 end
 
 function T.test_convert_MiB()
@@ -399,16 +408,16 @@ function T.test_cli_srun_requires_gpu()
     options = { type = 'srun', partition = 'gpu', gpus = '2' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    options = { type = 'srun', partition = 'gpu', gres = 'gpu:2' }
+    options = { type = 'srun', partition = 'gpu', gres = 'gres/gpu:2' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    options = { type = 'srun', partition = 'gpu', gres = 'tmp:100G,gpu:2' }
+    options = { type = 'srun', partition = 'gpu', gres = 'gres/tmp:100G,gres/gpu:2' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    options = { type = 'srun', partition = 'gpu', gres = 'tmp:100G' }
+    options = { type = 'srun', partition = 'gpu', gres = 'gres/tmp:100G' }
     assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
 
-    options = { type = 'srun', partition = 'gpu', gres = 'gpu:0' }
+    options = { type = 'srun', partition = 'gpu', gres = 'gres/gpu:0' }
     assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
 
     options = { type = 'srun', partition = 'gpu', ['gpus-per-node'] = '2' }
@@ -424,7 +433,7 @@ function T.test_cli_srun_requires_gpu()
     options = { type = 'srun', gpus = '2' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    options = { type = 'srun', gres = 'gpu:2' }
+    options = { type = 'srun', gres = 'gres/gpu:2' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
     options = { type = 'srun', ['gpus-per-node'] = '2' }
@@ -458,18 +467,18 @@ function T.test_cli_srun_tmp_requests()
     -- Max allocatable is 3500 GiB.
     -- Max non-exclusive is 3500 - 7*128 = 2604 GiB.
     local max_allocatable_tmp = convert_MiB('3500G')
- 
-    options = { type = 'srun', partition = 'gpu', gres = 'tmp:2600G,gpu:2' }
+
+    options = { type = 'srun', partition = 'gpu', gres = 'gres/tmp:2600G,gres/gpu:2' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    options = { type = 'srun', partition = 'gpu', gres = 'tmp:2700G,gpu:2' }
+    options = { type = 'srun', partition = 'gpu', gres = 'gres/tmp:2700G,gres/gpu:2' }
     assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
 
     -- Exclusive allocations always get the max tmp allocation.
-    options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive', gres = 'tmp:2700G,gpu:2' }
+    options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive', gres = 'gres/tmp:2700G,gres/gpu:2' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    local gres_options = parse_csv_tbl(options['gres'], ':')
+    local gres_options = parse_csv_tbl(options['gres'], ':', 'gres/')
     assert(eq(max_allocatable_tmp, convert_MiB(gres_options.tmp)))
 end
 
@@ -486,7 +495,7 @@ function T.test_cli_srun_exclusive_gres()
     options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    local gres_options = parse_csv_tbl(options['gres'], ':')
+    local gres_options = parse_csv_tbl(options['gres'], ':', 'gres/')
     assert(eq(max_allocatable_tmp, convert_MiB(gres_options.tmp)))
     assert(eq(gpus_per_node, tonumber(gres_options.gpu)))
 end
