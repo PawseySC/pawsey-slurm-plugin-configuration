@@ -109,6 +109,11 @@ local function run_show_partition(partition)
     return os_execute('scontrol show partition --all --oneliner '..(partition or '')..' 2>/dev/null')
 end
 
+-- Run sinfo nodes -h -o %G; this function will be mocked in unit testing.
+local function run_show_node_gres(partition)
+    return os_execute('sinfo nodes -h -o %G -p '..partition..' 2>/dev/null')
+end
+
 local function get_default_partition()
     local all_pinfo_str, rc = run_show_partition()
     if rc == 0 then
@@ -199,6 +204,30 @@ local function get_partition_info(partition)
 
     if rc == 0 then
         return parse_partition_info_str(pinfo_str)
+    end
+    return nil
+end
+
+local function parse_node_gres_str(node_gres_str)
+    if not node_gres_str then return nil end
+
+    -- Expect output to be comma-separated key:value pairs.
+    -- On the assumption that the partition is homogeoneous, only look at the first line.
+
+    line = string.gsub(node_gres_str, '\n.*', '')
+    if line == '(null)' then
+        return {}
+    else
+        return parse_csv_tbl(line, ':')
+    end
+end
+
+local function get_node_gres(partition)
+    if not partition or partition == '' then return nil end
+    local node_gres_str, rc = run_show_node_gres(partition)
+
+    if rc == 0 then
+        return parse_node_gres_str(node_gres_str)
     end
     return nil
 end
@@ -320,6 +349,25 @@ function slurm_cli_pre_submit(options, offset)
         local pinfo = get_partition_info(partition)
         if pinfo == nil then return slurm_error("unable to retrieve partition information") end
 
+        local node_gres = get_node_gres(partition)
+        if node_gres == nil then return slurm_error("unable to retrieve gpu partition node information") end
+
+        local gpus_per_node = 0
+        if node_gres.gpu then
+            gpus_per_node = string.gsub(node_gres.gpu, "%(.*", "")
+            gpus_per_node = tonumber(gpus_per_node)
+        end
+        if not gpus_per_node then return slurm_error("unable to determine GPU count from partition node information") end
+
+        local max_tmp_str = nil
+        local max_tmp_MiB = 0
+        if node_gres.tmp then
+            max_tmp_str = node_gres.tmp
+            max_tmp_MiB = convert_MiB(max_tmp_str)
+
+            if max_tmp_MiB == nil then return slurm_error("unable to determine size of tmp gres") end
+        end
+
         local tres = pinfo.TRES
         if not tres or not tres.cpu or not tres['gres/gpu'] or not tonumber(tres['gres/gpu']) then
             return slurm_error('unable to determine cpu to gpu ratio')
@@ -332,16 +380,9 @@ function slurm_cli_pre_submit(options, offset)
             return slurm_errorf('cannot explicitly request CPU resources for GPU allocation; each allocated GPU allocates %d cores', cpus_per_gpu)
         end
 
-        -- In principle, can use sinfo -o %G to get node configured gres; this information is not in pinfo.TRES.
-        -- For now, in order to address NVMe tmp allocation issues on the gpu partitions, the capacities are hard-coded:
-        --     Allocatable NVMe on tmp is 3500 GiB
-        --     Default allocation, set in job_submit.lua, is 128 GiB.
-
-        local gpus_per_node = 8
-        local max_tmp_str = '3500G'
-
-        local max_tmp_MiB = convert_MiB(max_tmp_str)
-        local non_exclusive_max_tmp_MiB = max_tmp_MiB - (gpus_per_node - 1) * convert_MiB('128G')
+        -- The default tmp allocation is hard-coded in the job_submit.lua script, and not directly accessible from the filter.
+        local default_tmp_MiB = convert_MiB('128G')
+        local non_exclusive_max_tmp_MiB = math.max(0, max_tmp_MiB - (gpus_per_node - 1) * default_tmp_MiB)
 
         -- Try to get mem-per-gpu from JobDefaults? Only used for informational purposes.
         local def_mem_per_gpu = pinfo.JobDefaults and pinfo.JobDefaults.DefMemPerGPU
@@ -361,18 +402,19 @@ function slurm_cli_pre_submit(options, offset)
         -- Reject if tmp request is too high
         local tmp_request_MiB = convert_MiB(gres_options.tmp) or 0
         if not is_node_exclusive and tmp_request_MiB > non_exclusive_max_tmp_MiB then
-            print('NOPE tmp_request_MiB', tmp_request_MiB, 'non_exclusive_max_tmp_MiB', non_exclusive_max_tmp_MiB)
-            return slurm_errorf('non-exclusive GPU allocations may request at most %d GiB of NVME tmp', non_exclusive_max_tmp_MiB/1024)
+            return slurm_errorf('non-exclusive GPU allocations may request at most %d GiB of NVMe tmp', non_exclusive_max_tmp_MiB/1024)
         end
 
         options['cpus-per-gpu'] = math.floor(cpus_per_gpu)
-        if is_node_exclusive then
+
+        if is_node_exclusive and not is_srun_in_allocation then
             gres_options.gpu = gpus_per_node
-            gres_options.tmp = max_tmp_str
+            if max_tmp_str then gres_options.tmp = max_tmp_str end
 
             options['gres'] = collect_csv_tbl(gres_options, ':', 'gres/')
         end
     end
+
 
     slurm_debugf('options on exit: %s', slurm.json_cli_options(options))
     return slurm.SUCCESS
@@ -388,6 +430,7 @@ return {
     slurm_errorf = slurm_errorf,
     slurm_debug = slurm_debug,
     slurm_debugf = slurm_debugf,
+    get_node_gres = get_node_gres,
     get_default_partition_or_env = get_default_partition_or_env,
     parse_partition_info_str = parse_partition_info_str,
     get_partition_info = get_partition_info,

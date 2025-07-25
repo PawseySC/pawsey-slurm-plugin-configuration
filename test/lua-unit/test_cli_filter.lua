@@ -145,10 +145,13 @@ function T.test_collect_csv_tbl()
     assert(eq(tbl_check, parse_csv_tbl(collect_csv_tbl(tbl_in, ':'), ':')))
     assert(eq(tbl_check, parse_csv_tbl(collect_csv_tbl(tbl_in, '='), '=')))
 
-   -- and also check inserting prefixes
+    -- and also check inserting prefixes
+
     tbl_check = { ['xyz/foo'] = '4', 'xyz/quux', 'xyz/xyzzzy', ['xyz/bar'] = 'baz' }
     assert(eq(tbl_check, parse_csv_tbl(collect_csv_tbl(tbl_in, ':', 'xyz/'), ':')))
     assert(eq(tbl_check, parse_csv_tbl(collect_csv_tbl(tbl_in, '=', 'xyz/'), '=')))
+
+    assert(eq('', collect_csv_tbl({}, ':', 'pfx/')))
 end
 
 function T.test_convert_MiB()
@@ -210,6 +213,12 @@ local mock_show_partition_output_tbl = {
             TRESBillingWeights=CPU=1,gres/GPU=64"
 }
 
+local mock_show_node_gres_output_tbl = {
+    work = '(null)',
+    gpu  = 'gpu:8(S:0-7),tmp:3500G',
+    foo  = 'tmp:2T'
+}
+
 -- provide a substitute for invoking `scontrol partition info`
 local function mock_run_show_partition(partition)
     local out = ''
@@ -220,6 +229,16 @@ local function mock_run_show_partition(partition)
     else
         out = mock_show_partition_output_tbl[partition]
     end
+
+    if out then return out, 0
+    else return nil, 1
+    end
+end
+
+-- provide a substitute for invoking `sinfo nodes -h -o %G -p`
+local function mock_run_show_node_gres(partition)
+    local out = ''
+    if partition ~= '' then out = mock_show_node_gres_output_tbl[partition] end
 
     if out then return out, 0
     else return nil, 1
@@ -269,6 +288,25 @@ function T.test_get_partition_info()
     assert(eq({ CPU = '1' }, pinfo_work.TRESBillingWeights))
 end
 
+function T.test_get_node_gres()
+    local get_node_gres = lunit.mock_function_upvalues(clif_functions.get_node_gres, { run_show_node_gres = mock_run_show_node_gres }, true)
+    local eq = lunit.test_eq_v
+
+    local ngres_work = get_node_gres('work')
+    local ngres_gpu = get_node_gres('gpu')
+    local ngres_foo = get_node_gres('foo')
+
+    assert(eq({}, ngres_work))
+
+    assert(eq(nil, ngres_work.gpu))
+    assert(eq('8(S:0-7)', ngres_gpu.gpu))
+    assert(eq(nil, ngres_foo.gpu))
+
+    assert(eq(nil, ngres_work.tmp))
+    assert(eq('3500G', ngres_gpu.tmp))
+    assert(eq('2T', ngres_foo.tmp))
+end
+
 function T.test_slurm_error()
     local slurm_error = clif_functions.slurm_error
     local slurm_errorf = clif_functions.slurm_errorf
@@ -312,7 +350,8 @@ function T.test_cli_sets_memory()
     local def_mem_per_cpu = 920
     local n_threads_per_node = 256
 
-    local slurm_cli_pre_submit = lunit.mock_function_upvalues(slurm_cli_pre_submit, { run_show_partition = mock_run_show_partition }, true)
+    local slurm_cli_pre_submit = lunit.mock_function_upvalues(slurm_cli_pre_submit,
+         { run_show_partition = mock_run_show_partition, run_show_node_gres = mock_run_show_node_gres }, true)
     local eq = lunit.test_eq_v
 
     -- expect only mem-per-cpu to be set out of the memory options
@@ -394,7 +433,8 @@ function T.test_cli_sets_memory()
 end
 
 function T.test_cli_srun_requires_gpu()
-    local tmp = lunit.mock_function_upvalues(slurm_cli_pre_submit, { run_show_partition = mock_run_show_partition }, true)
+    local tmp = lunit.mock_function_upvalues(slurm_cli_pre_submit,
+         { run_show_partition = mock_run_show_partition, run_show_node_gres = mock_run_show_node_gres }, true)
     local slurm_cli_pre_submit = lunit.mock_function_env(tmp, { os = mock_os }, true)
     local eq = lunit.test_eq_v
 
@@ -449,7 +489,8 @@ function T.test_cli_srun_requires_gpu()
 end
 
 function T.test_cli_srun_tmp_requests()
-    local tmp = lunit.mock_function_upvalues(slurm_cli_pre_submit, { run_show_partition = mock_run_show_partition }, true)
+    local tmp = lunit.mock_function_upvalues(slurm_cli_pre_submit,
+         { run_show_partition = mock_run_show_partition, run_show_node_gres = mock_run_show_node_gres }, true)
     local slurm_cli_pre_submit = lunit.mock_function_env(tmp, { os = mock_os }, true)
     local convert_MiB = clif_functions.convert_MiB
     local parse_csv_tbl = clif_functions.parse_csv_tbl
@@ -483,7 +524,8 @@ function T.test_cli_srun_tmp_requests()
 end
 
 function T.test_cli_srun_exclusive_gres()
-    local tmp = lunit.mock_function_upvalues(slurm_cli_pre_submit, { run_show_partition = mock_run_show_partition }, true)
+    local tmp = lunit.mock_function_upvalues(slurm_cli_pre_submit,
+         { run_show_partition = mock_run_show_partition, run_show_node_gres = mock_run_show_node_gres }, true)
     local slurm_cli_pre_submit = lunit.mock_function_env(tmp, { os = mock_os }, true)
     local convert_MiB = clif_functions.convert_MiB
     local parse_csv_tbl = clif_functions.parse_csv_tbl
