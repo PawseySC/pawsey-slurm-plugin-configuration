@@ -13,6 +13,10 @@
     SLURM_CLI_FILTER_DEBUG is set to a number greater than zero.
 ]]
 
+-- $Date$, $Revision$ substituted by keyword script in staging.
+local git_date = '$Date$'
+local git_revision = '$Revision$'
+
 --[[
     tokenize(str, pattern, max_tokens)
 
@@ -27,10 +31,6 @@
     - If the pattern matches a zero-length subsring, it will only be considered
       to describe a separator if the preceding token would be non-empty.
 ]]
-
--- $Date$, $Revision$ substituted by keyword script in staging.
-local git_date = '$Date$'
-local git_revision = '$Revision$'
 
 local function tokenize(str, pattern, max_tokens)
     if #str == 0 then return {} end
@@ -123,6 +123,52 @@ local function get_default_partition_or_env()
     return os.getenv('SLURM_JOB_PARTITION') or get_default_partition()
 end
 
+-- Parse slurm strings of the form 'key=value,key=value,...' to table.
+-- Supply e.g. ':' as second argument to parse strings of the form 'key:value,...' etc.
+
+local function parse_csv_tbl(csv, key_sep)
+    key_sep = key_sep or '='
+    local tbl = {}
+    for _, field in ipairs(tokenize(csv, ',')) do
+        local k, v = table.unpack(tokenize(field, key_sep, 2))
+        if v == nil then table.insert(tbl, k)
+        else tbl[k] = v
+        end
+    end
+    return tbl
+end
+
+function pp(t, i)
+    i = i or ''
+    if type(t) ~= 'table' then return tostring(t) end
+    local s =  '{'
+    local j = 0
+    i = i .. ' '
+    for k,v in pairs(t) do
+        if type(k) ~= 'number' and tonumber(k) then k = '"' .. k .. '"' end
+        if j>0 then s = s .. '\n' .. i end
+        j = j + 1
+        s = s .. ' ' .. k .. ': ' .. pp(v, i .. string.rep(' ', string.len(k)+3))
+    end
+    if j>0 then return s .. ' }' else return s .. '}' end
+end
+
+local function collect_csv_tbl(tbl, key_sep)
+    key_sep = key_sep or '='
+    local csv = ''
+    local field_sep = ''
+
+    for k, v in pairs(tbl) do
+        if type(k) == 'string' then
+            csv = csv .. field_sep .. k .. key_sep .. v
+        else
+            csv = csv .. field_sep .. v
+        end
+        field_sep = ','
+    end
+    return csv
+end
+
 local function parse_partition_info_str(pinfo_str)
     if not pinfo_str then return nil end
 
@@ -134,12 +180,7 @@ local function parse_partition_info_str(pinfo_str)
         if k == 'JobDefaults' or k == 'TRES' or k == 'TRESBillingWeights' then
             local rhs = {}
             if v ~= '(null)' then
-                for _, subfield in ipairs(tokenize(v, ',')) do
-                    local k, v = table.unpack(tokenize(subfield, '=', 2))
-                    if v == nil then rhs.insert(k)
-                    else rhs[k] = v
-                    end
-                end
+                rhs = parse_csv_tbl(v, '=')
             end
             pinfo[k] = rhs
         else
@@ -157,6 +198,23 @@ local function get_partition_info(partition)
         return parse_partition_info_str(pinfo_str)
     end
     return nil
+end
+
+local function convert_MiB(memory)
+    local scale_tbl = {
+        t = 1024*1024, T = 1024*1024,
+        g = 1024,      G = 1024,
+        m = 1,         M = 1,
+        k = 1/1024,    K = 1/1024
+    }
+
+    if tonumber(memory) then return tonumber(memory) end
+    if type(memory) ~= 'string' then return nil end
+
+    local scale = scale_tbl[string.sub(memory, -1)]
+    memory = tonumber(string.sub(memory, 1, string.len(memory)-1))
+
+    if not scale or not memory then return nil else return memory * scale end
 end
 
 -- Slurm CLI filter interface functions:
@@ -208,6 +266,10 @@ function slurm_cli_pre_submit(options, offset)
     -- the slurm cli_filter lua API differ between the json reporting and between the C-backed lua 'options' table.)
     local function is_unset(x)  return x == nil or x == '-2' or x == 'unset' or x == '0' end
 
+    -- A gres option, if present, may contain multiple comma-separated key:value fields that we will need to examine.
+    local gres_options = {}
+    if not is_unset(options['gres']) then gres_options = parse_csv_tbl(options['gres'], ':') end
+
     -- Are we in srun that's being invoked inside an allocation?
     local is_srun_in_allocation = options['type'] == 'srun' and os.getenv('SLURM_JOB_PARTITION') ~= nil
 
@@ -218,7 +280,7 @@ function slurm_cli_pre_submit(options, offset)
 
     -- have any gpu resrouce options been passed?
     local has_explicit_gpu_request =
-        not is_unset(options['gres']) or not is_unset(options['gpus']) or
+        not is_unset(gres_options.gpu) or not is_unset(options['gpus']) or
         not is_unset(options['gpus-per-node']) or not is_unset(options['gpus-per-task'])
 
     -- have any mem resource options been passed, excluding a request for all node memory?
@@ -256,13 +318,27 @@ function slurm_cli_pre_submit(options, offset)
         if pinfo == nil then return slurm_error("unable to retrieve partition information") end
 
         local tres = pinfo.TRES
-        if not tres or not tres.cpu or not tres['gres/gpu'] then return slurm_error('unable to determine cpu to gpu ratio') end
+        if not tres or not tres.cpu or not tres['gres/gpu'] or not tonumber(tres['gres/gpu']) then
+            return slurm_error('unable to determine cpu to gpu ratio')
+        end
+
         local cpus_per_gpu = tonumber(tres.cpu)/tonumber(tres['gres/gpu'])
         if tonumber(options['threads-per-core']) == 1 then cpus_per_gpu = cpus_per_gpu/2 end
 
         if has_explicit_cpu_request and not is_srun_in_allocation then
             return slurm_errorf('cannot explicitly request CPU resources for GPU allocation; each allocated GPU allocates %d cores', cpus_per_gpu)
         end
+
+        -- In principle, can use sinfo -o %G to get node configured gres; this information is not in pinfo.TRES.
+        -- For now, in order to address NVMe tmp allocation issues on the gpu partitions, the capacities are hard-coded:
+        --     Allocatable NVMe on tmp is 3500 GiB
+        --     Default allocation, set in job_submit.lua, is 128 GiB.
+
+        local gpus_per_node = 8
+        local max_tmp_str = '3500G'
+
+        local max_tmp_MiB = convert_MiB(max_tmp_str)
+        local non_exclusive_max_tmp_MiB = max_tmp_MiB - (gpus_per_node - 1) * convert_MiB('128G')
 
         -- Try to get mem-per-gpu from JobDefaults? Only used for informational purposes.
         local def_mem_per_gpu = pinfo.JobDefaults and pinfo.JobDefaults.DefMemPerGPU
@@ -279,9 +355,19 @@ function slurm_cli_pre_submit(options, offset)
             return slurm_error('non-exclusive GPU allocations require a request for one or more GPUs')
         end
 
+        -- Reject if tmp request is too high
+        local tmp_request_MiB = convert_MiB(gres_options.tmp) or 0
+        if not is_node_exclusive and tmp_request_MiB > non_exclusive_max_tmp_MiB then
+            print('NOPE tmp_request_MiB', tmp_request_MiB, 'non_exclusive_max_tmp_MiB', non_exclusive_max_tmp_MiB)
+            return slurm_errorf('non-exclusive GPU allocations may request at most %d GiB of NVME tmp', non_exclusive_max_tmp_MiB/1024)
+        end
+
         options['cpus-per-gpu'] = math.floor(cpus_per_gpu)
         if is_node_exclusive then
-            options['gres'] = 'gpu:8'
+            gres_options.gpu = gpus_per_node
+            gres_options.tmp = max_tmp_str
+
+            options['gres'] = collect_csv_tbl(gres_options, ':')
         end
     end
 
@@ -292,6 +378,9 @@ end
 -- return table of local functions for unit testing
 return {
     tokenize = tokenize,
+    parse_csv_tbl = parse_csv_tbl,
+    collect_csv_tbl = collect_csv_tbl,
+    convert_MiB = convert_MiB,
     slurm_error = slurm_error,
     slurm_errorf = slurm_errorf,
     slurm_debug = slurm_debug,
