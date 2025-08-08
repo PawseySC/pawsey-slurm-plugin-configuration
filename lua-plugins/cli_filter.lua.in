@@ -17,6 +17,29 @@
 local git_date = '$Date$'
 local git_revision = '$Revision$'
 
+-- Access constraints mapping to partition
+local constraints_mapping = {
+    askaprt = {
+        askaprt = 'askaprt'
+    },
+    copy = {
+        copy    = 'copy'
+    },
+    cpu = {
+        debug   = 'debug',
+        highmem = 'highmem',
+        work    = 'work'
+    },
+    gpu = {
+        debug   = 'gpu-dev',
+        highmem = 'gpu-highmem',
+        work    = 'gpu'
+    },
+    ['mwa-asvocopy'] = {
+        ['mwa-asvocopy'] = 'mwa-asvocopy'
+    }
+}
+
 --[[
     tokenize(str, pattern, max_tokens)
 
@@ -63,6 +86,17 @@ local function tokenize(str, pattern, max_tokens)
         while #tokens>0 and tokens[#tokens] == '' do tokens[#tokens] = nil end
     end
     return tokens
+end
+
+-- Test if a value exists in an array
+
+local function existsIn(array, value)
+    for i=1, #array do
+        if array[i] == value then
+            return true
+        end
+    end
+    return false
 end
 
 -- Wrappers for slurm logging
@@ -126,6 +160,34 @@ end
 
 local function get_default_partition_or_env()
     return os.getenv('SLURM_JOB_PARTITION') or get_default_partition()
+end
+
+-- Obtain the derived partition from the provided options
+-- Normally this will just be the partition value from the options or the
+-- default partition. For the acceptance partition, the provided constraints
+-- are used to derive which partition type they match
+
+local function get_derived_partition(options)
+    local partition = options['partition'] or get_default_partition_or_env()
+    if partition == 'acceptance' then
+        local constraints = tokenize(options['constraint'], ',')
+        -- no constraints, just return the partition from options
+        if #constraints == 0 then
+            return partition
+        end
+
+        for tkey, tvalue in pairs(constraints_mapping) do
+            if existsIn(constraints, tkey) then
+                for ckey, partition in pairs(tvalue) do
+                    if existsIn(constraints, ckey) then
+                        return partition
+                    end
+                end
+            end
+        end
+    end
+
+    return partition
 end
 
 -- Parse slurm strings of the form 'key=value,key=value,...' to table.
@@ -343,7 +405,7 @@ function slurm_cli_pre_submit(options, offset)
     local has_gpu_power_request = spank_options['gpu-srange'] ~= nil or spank_options['gpu-power-cap'] ~= nil
 
     local is_node_exclusive = options['exclusive'] == 'exclusive' -- disregard 'user', 'mcs' possibilities.
-    local partition = options['partition'] or get_default_partition_or_env()
+    local partition = get_derived_partition(options)
 
     if not is_gpu_partition(partition) and not is_excepted_partition(partition) then
         -- Non-gpu partition path:
@@ -458,6 +520,7 @@ end
 -- return table of local functions for unit testing
 return {
     tokenize = tokenize,
+    existsIn = existsIn,
     parse_csv_tbl = parse_csv_tbl,
     collect_csv_tbl = collect_csv_tbl,
     collate_spank_options = collate_spank_options,
@@ -468,6 +531,7 @@ return {
     slurm_debugf = slurm_debugf,
     get_node_gres = get_node_gres,
     get_default_partition_or_env = get_default_partition_or_env,
+    get_derived_partition = get_derived_partition,
     parse_partition_info_str = parse_partition_info_str,
     get_partition_info = get_partition_info,
 }
