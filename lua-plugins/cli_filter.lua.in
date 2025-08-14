@@ -168,9 +168,9 @@ end
 -- are used to derive which partition type they match
 
 local function get_derived_partition(options)
-    local partition = options['partition'] or get_default_partition_or_env()
+    local partition = options.partition or get_default_partition_or_env()
     if partition == 'acceptance' then
-        local constraints = tokenize(options['constraint'], ',')
+        local constraints = options.constraint ~= nil and tokenize(options.constraint, ',') or {}
         -- no constraints, just return the partition from options
         if #constraints == 0 then
             return partition
