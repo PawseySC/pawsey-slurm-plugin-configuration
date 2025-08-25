@@ -154,6 +154,26 @@ function T.test_collect_csv_tbl()
     assert(eq('', collect_csv_tbl({}, ':', 'pfx/')))
 end
 
+function T.test_collate_spank_options()
+    local collate_spank_options = clif_functions.collate_spank_options
+    local eq = lunit.test_eq_v
+
+    local options = {}
+    assert(eq({}, collate_spank_options(options)))
+
+    options.spank = 3
+    assert(eq({}, collate_spank_options(options)))
+
+    options.spank = {}
+    assert(eq({}, collate_spank_options(options)))
+
+    options.spank = { foo = 37 }
+    assert(eq({}, collate_spank_options(options)))
+
+    options.spank = { a = { fish = 3, cake = 5}, b = { bean = 'foo' }, c = 'notatable' }
+    assert(eq({ fish = 3, cake = 5, bean = 'foo' }, collate_spank_options(options)))
+end
+
 function T.test_convert_MiB()
     local convert_MiB = clif_functions.convert_MiB
     local eq = lunit.test_eq_v
@@ -488,35 +508,26 @@ function T.test_cli_srun_requires_gpu()
     mock_unset('SLURM_JOB_PARTITION')
 end
 
-function T.test_cli_srun_tmp_requests()
-    local tmp = lunit.mock_function_upvalues(slurm_cli_pre_submit,
+function T.test_cli_tmp_requests()
+    local slurm_cli_pre_submit = lunit.mock_function_upvalues(slurm_cli_pre_submit,
          { run_show_partition = mock_run_show_partition, run_show_node_gres = mock_run_show_node_gres }, true)
-    local slurm_cli_pre_submit = lunit.mock_function_env(tmp, { os = mock_os }, true)
     local convert_MiB = clif_functions.convert_MiB
     local parse_csv_tbl = clif_functions.parse_csv_tbl
     local eq = lunit.test_eq_v
-
-    -- For srun outside an allocation, we allow there not to be an explicit gpu
-    -- request option because `--gres=gpu:N` is not propagated to srun and we
-    -- wish to permit a simple remote interactive shell case without requiring
-    -- an explicit srun. Otherwise, without an existing allocation, we demand
-    -- the srun requests gpu resources.
-
-    mock_unset('SLURM_JOB_PARTITION')
 
     -- NVMe tmp allocation limits are hard-coded; see cli_filter.lua:
     -- Max allocatable is 3500 GiB.
     -- Max non-exclusive is 3500 - 7*128 = 2604 GiB.
     local max_allocatable_tmp = convert_MiB('3500G')
 
-    options = { type = 'srun', partition = 'gpu', gres = 'gres/tmp:2600G,gres/gpu:2' }
+    options = { partition = 'gpu', gres = 'gres/tmp:2600G,gres/gpu:2' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    options = { type = 'srun', partition = 'gpu', gres = 'gres/tmp:2700G,gres/gpu:2' }
+    options = { partition = 'gpu', gres = 'gres/tmp:2700G,gres/gpu:2' }
     assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
 
     -- Exclusive allocations always get the max tmp allocation.
-    options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive', gres = 'gres/tmp:2700G,gres/gpu:2' }
+    options = { partition = 'gpu', exclusive = 'exclusive', gres = 'gres/tmp:2700G,gres/gpu:2' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
     local gres_options = parse_csv_tbl(options['gres'], ':', 'gres/')
@@ -534,12 +545,84 @@ function T.test_cli_srun_exclusive_gres()
     local max_allocatable_tmp = convert_MiB('3500G')
     local gpus_per_node = 8
 
-    options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive' }
+    mock_unset('SLURM_JOB_PARTITION')
+
+    -- Just salloc/sbatch:
+    options = { partition = 'gpu', exclusive = 'exclusive' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
     local gres_options = parse_csv_tbl(options['gres'], ':', 'gres/')
     assert(eq(max_allocatable_tmp, convert_MiB(gres_options.tmp)))
     assert(eq(gpus_per_node, tonumber(gres_options.gpu)))
+
+   -- Srun outside allocation:
+    options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    gres_options = parse_csv_tbl(options['gres'], ':', 'gres/')
+    assert(eq(max_allocatable_tmp, convert_MiB(gres_options.tmp)))
+    assert(eq(gpus_per_node, tonumber(gres_options.gpu)))
+
+    -- Srun inside allocation: we should not be setting gres at all if not supplied.
+    mock_setenv('SLURM_JOB_PARTITION', 'gpu')
+    options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+    assert(eq(nil, options['gres']))
+
+    mock_unset('SLURM_JOB_PARTITION')
+end
+
+function T.test_cli_gpu_power_options_filter()
+    local tmp = lunit.mock_function_upvalues(slurm_cli_pre_submit,
+         { run_show_partition = mock_run_show_partition, run_show_node_gres = mock_run_show_node_gres }, true)
+    local slurm_cli_pre_submit = lunit.mock_function_env(tmp, { os = mock_os }, true)
+    local eq = lunit.test_eq_v
+
+    -- Options --gpu-srange and --gpu-power-cap, presented via the spank options table in options.spank.lua, are
+    -- only permitted on a gpu partition, with exclusive, and for salloc/sbatch or srun run outside of an allocation.
+
+    mock_unset('SLURM_JOB_PARTITION')
+
+    -- Missing --exclusive => fail:
+    options = { partition = 'gpu', spank = { lua = { ['gpu-srange'] = '800-900' }}}
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    options = { partition = 'gpu', spank = { lua = { ['gpu-power-cap'] = '400' }}}
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'gpu', spank = { lua = { ['gpu-srange'] = '800-900' }}}
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'gpu', spank = { lua = { ['gpu-power-cap'] = '400' }}}
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    -- With exclusive is permitted:
+    options = { partition = 'gpu', exclusive = 'exclusive', spank = { lua = { ['gpu-srange'] = '800-900' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { partition = 'gpu', exclusive = 'exclusive', spank = { lua = { ['gpu-power-cap'] = '400' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', exclusive = 'exclusive', partition = 'gpu', spank = { lua = { ['gpu-srange'] = '800-900' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', exclusive = 'exclusive', partition = 'gpu', spank = { lua = { ['gpu-power-cap'] = '400' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    -- Srun within allocation cases should all succeed (spank plugin options are not reset for these srun invocations):
+    mock_setenv('SLURM_JOB_PARTITION', 'gpu')
+    options = { type = 'srun', partition = 'gpu', spank = { lua = { ['gpu-srange'] = '800-900' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'gpu', spank = { lua = { ['gpu-power-cap'] = '400' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive', spank = { lua = { ['gpu-srange'] = '800-900' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive', spank = { lua = { ['gpu-power-cap'] = '400' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+    mock_unset('SLURM_JOB_PARTITION')
 end
 
 if not lunit.run_tests(T) then os.exit(1) end
