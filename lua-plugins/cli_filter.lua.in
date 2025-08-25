@@ -318,14 +318,24 @@ function slurm_cli_pre_submit(options, offset)
     -- have any mem resource options been passed, excluding a request for all node memory?
     local has_all_mem_request = options['mem'] == "0?"
     local has_explicit_mem_request =
-        options['mem-per-cpu'] ~= nil or options['mem-per-gpu'] ~= nil or options['mem'] ~=nil and not has_all_mem_request
+        options['mem-per-cpu'] ~= nil or options['mem-per-gpu'] ~= nil or options['mem'] ~= nil and not has_all_mem_request
+
+    -- have any gpu power options been supplied?
+    local has_gpu_power_request = options['spank:gpu-srange'] ~= nil or options['spank:gpu-power-cap'] ~= nil
 
     local is_node_exclusive = options['exclusive'] == 'exclusive' -- disregard 'user', 'mcs' possibilities.
     local partition = options['partition'] or get_default_partition_or_env()
 
     if not is_gpu_partition(partition) and not is_excepted_partition(partition) then
-        -- Non-gpu partition path: compute correct mem-per-cpu value from available memory and threads-per-core option
-        -- if memory has not been reqested explicitly
+        -- Non-gpu partition path:
+        -- Abort if any gpu power options have been given.
+
+        if has_gpu_power_request then
+            return slurm_error("GPU power control options --gpu-srange and --gpu-power-cap may only be used with an exclusive GPU allocation request")
+        end
+
+        -- Compute correct mem-per-cpu value from available memory and threads-per-core option if memory has not been
+        -- reqested explicitly.
 
         if not has_explicit_mem_request then
             local pinfo = get_partition_info(partition)
@@ -344,7 +354,12 @@ function slurm_cli_pre_submit(options, offset)
             end
         end
     elseif is_gpu_partition(partition) then
-        -- Gpu partition path
+        -- Gpu partition path:
+
+        -- Gpu power options are not permitted in non-exclusive allocations or in srun invocations from within an allocation.
+        if has_gpu_power_request and (not is_node_exclusive or is_srun_in_allocation) then
+            return slurm_error("GPU power control options --gpu-srange and --gpu-power-cap may only be used with an exclusive GPU allocation request")
+        end
 
         local pinfo = get_partition_info(partition)
         if pinfo == nil then return slurm_error("unable to retrieve partition information") end
