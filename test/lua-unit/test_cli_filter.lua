@@ -154,6 +154,26 @@ function T.test_collect_csv_tbl()
     assert(eq('', collect_csv_tbl({}, ':', 'pfx/')))
 end
 
+function T.test_collate_spank_options()
+    local collate_spank_options = clif_functions.collate_spank_options
+    local eq = lunit.test_eq_v
+
+    local options = {}
+    assert(eq({}, collate_spank_options(options)))
+
+    options.spank = 3
+    assert(eq({}, collate_spank_options(options)))
+
+    options.spank = {}
+    assert(eq({}, collate_spank_options(options)))
+
+    options.spank = { foo = 37 }
+    assert(eq({}, collate_spank_options(options)))
+
+    options.spank = { a = { fish = 3, cake = 5}, b = { bean = 'foo' }, c = 'notatable' }
+    assert(eq({ fish = 3, cake = 5, bean = 'foo' }, collate_spank_options(options)))
+end
+
 function T.test_convert_MiB()
     local convert_MiB = clif_functions.convert_MiB
     local eq = lunit.test_eq_v
@@ -558,51 +578,50 @@ function T.test_cli_gpu_power_options_filter()
     local slurm_cli_pre_submit = lunit.mock_function_env(tmp, { os = mock_os }, true)
     local eq = lunit.test_eq_v
 
-    -- Options --gpu-srange and --gpu-power-cap, represented as spank:gpu-srange and spank:gpu-power-cap
-    -- in the lua options table, are only permitted on a gpu partition, with exclusive, and for salloc/sbatch
-    -- or srun run outside of an allocation.
+    -- Options --gpu-srange and --gpu-power-cap, presented via the spank options table in options.spank.lua, are
+    -- only permitted on a gpu partition, with exclusive, and for salloc/sbatch or srun run outside of an allocation.
 
     mock_unset('SLURM_JOB_PARTITION')
 
     -- Missing --exclusive => fail:
-    options = { partition = 'gpu', ['spank:gpu-srange'] = '800-900' }
+    options = { partition = 'gpu', spank = { lua = { ['gpu-srange'] = '800-900' }}}
     assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
 
-    options = { partition = 'gpu', ['spank:gpu-power-cap'] = '400' }
+    options = { partition = 'gpu', spank = { lua = { ['gpu-power-cap'] = '400' }}}
     assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
 
-    options = { type = 'srun', partition = 'gpu', ['spank:gpu-srange'] = '800-900' }
+    options = { type = 'srun', partition = 'gpu', spank = { lua = { ['gpu-srange'] = '800-900' }}}
     assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
 
-    options = { type = 'srun', partition = 'gpu', ['spank:gpu-power-cap'] = '400' }
+    options = { type = 'srun', partition = 'gpu', spank = { lua = { ['gpu-power-cap'] = '400' }}}
     assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
 
     -- With exclusive is permitted:
-    options = { partition = 'gpu', exclusive = 'exclusive', ['spank:gpu-srange'] = '800-900' }
+    options = { partition = 'gpu', exclusive = 'exclusive', spank = { lua = { ['gpu-srange'] = '800-900' }}}
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    options = { partition = 'gpu', exclusive = 'exclusive', ['spank:gpu-power-cap'] = '400' }
+    options = { partition = 'gpu', exclusive = 'exclusive', spank = { lua = { ['gpu-power-cap'] = '400' }}}
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    options = { type = 'srun', exclusive = 'exclusive', partition = 'gpu', ['spank:gpu-srange'] = '800-900' }
+    options = { type = 'srun', exclusive = 'exclusive', partition = 'gpu', spank = { lua = { ['gpu-srange'] = '800-900' }}}
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    options = { type = 'srun', exclusive = 'exclusive', partition = 'gpu', ['spank:gpu-power-cap'] = '400' }
+    options = { type = 'srun', exclusive = 'exclusive', partition = 'gpu', spank = { lua = { ['gpu-power-cap'] = '400' }}}
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    -- Srun within allocation cases should all fail:
+    -- Srun within allocation cases should all succeed (spank plugin options are not reset for these srun invocations):
     mock_setenv('SLURM_JOB_PARTITION', 'gpu')
-    options = { type = 'srun', partition = 'gpu', ['spank:gpu-srange'] = '800-900' }
-    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+    options = { type = 'srun', partition = 'gpu', spank = { lua = { ['gpu-srange'] = '800-900' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    options = { type = 'srun', partition = 'gpu', ['spank:gpu-power-cap'] = '400' }
-    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+    options = { type = 'srun', partition = 'gpu', spank = { lua = { ['gpu-power-cap'] = '400' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive', ['spank:gpu-srange'] = '800-900' }
-    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+    options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive', spank = { lua = { ['gpu-srange'] = '800-900' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive', ['spank:gpu-power-cap'] = '400' }
-    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+    options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive', spank = { lua = { ['gpu-power-cap'] = '400' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
     mock_unset('SLURM_JOB_PARTITION')
 end
 
