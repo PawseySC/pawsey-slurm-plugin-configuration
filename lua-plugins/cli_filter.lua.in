@@ -249,6 +249,22 @@ local function convert_MiB(memory)
     if not scale or not memory then return nil else return memory * scale end
 end
 
+local function collate_spank_options(opt_tbl)
+    local collated = {}
+    if type(opt_tbl) == 'table' and type(opt_tbl.spank) == 'table' then
+        for plugin, ptbl in pairs(opt_tbl.spank) do
+            if type(ptbl) == 'table' then
+                for k, v in pairs(ptbl) do
+                    if v == nil then table.insert(collated, k)
+                    else collated[k] = v
+                    end
+                end
+            end
+        end
+    end
+    return collated
+end
+
 -- Slurm CLI filter interface functions:
 
 function slurm_cli_setup_defaults(options, early)
@@ -298,6 +314,9 @@ function slurm_cli_pre_submit(options, offset)
     -- the slurm cli_filter lua API differ between the json reporting and between the C-backed lua 'options' table.)
     local function is_unset(x)  return x == nil or x == '-2' or x == 'unset' or x == '0' end
 
+    -- Any option handled by a spank plugin is special. Gather these up in their own table.
+    local spank_options = collate_spank_options(options)
+
     -- A gres option, if present, may contain multiple comma-separated key:value fields that we will need to examine.
     local gres_options = {}
     if not is_unset(options['gres']) then gres_options = parse_csv_tbl(options['gres'], ':', 'gres/') end
@@ -318,14 +337,24 @@ function slurm_cli_pre_submit(options, offset)
     -- have any mem resource options been passed, excluding a request for all node memory?
     local has_all_mem_request = options['mem'] == "0?"
     local has_explicit_mem_request =
-        options['mem-per-cpu'] ~= nil or options['mem-per-gpu'] ~= nil or options['mem'] ~=nil and not has_all_mem_request
+        options['mem-per-cpu'] ~= nil or options['mem-per-gpu'] ~= nil or options['mem'] ~= nil and not has_all_mem_request
+
+    -- have any gpu power options been supplied?
+    local has_gpu_power_request = spank_options['gpu-srange'] ~= nil or spank_options['gpu-power-cap'] ~= nil
 
     local is_node_exclusive = options['exclusive'] == 'exclusive' -- disregard 'user', 'mcs' possibilities.
     local partition = options['partition'] or get_default_partition_or_env()
 
     if not is_gpu_partition(partition) and not is_excepted_partition(partition) then
-        -- Non-gpu partition path: compute correct mem-per-cpu value from available memory and threads-per-core option
-        -- if memory has not been reqested explicitly
+        -- Non-gpu partition path:
+        -- Abort if any gpu power options have been given.
+
+        if has_gpu_power_request then
+            return slurm_error("GPU power control options --gpu-srange and --gpu-power-cap may only be used with an exclusive GPU allocation request")
+        end
+
+        -- Compute correct mem-per-cpu value from available memory and threads-per-core option if memory has not been
+        -- reqested explicitly.
 
         if not has_explicit_mem_request then
             local pinfo = get_partition_info(partition)
@@ -344,7 +373,13 @@ function slurm_cli_pre_submit(options, offset)
             end
         end
     elseif is_gpu_partition(partition) then
-        -- Gpu partition path
+        -- Gpu partition path:
+
+        -- Gpu power options are not permitted in non-exclusive allocations.
+        -- Spank options are inherited by srun invocations inside an allocation; we need to ignore them in that instance.
+        if has_gpu_power_request and not is_node_exclusive and not is_srun_in_allocation then
+            return slurm_error("GPU power control options --gpu-srange and --gpu-power-cap may only be used with an exclusive GPU allocation request")
+        end
 
         local pinfo = get_partition_info(partition)
         if pinfo == nil then return slurm_error("unable to retrieve partition information") end
@@ -425,6 +460,7 @@ return {
     tokenize = tokenize,
     parse_csv_tbl = parse_csv_tbl,
     collect_csv_tbl = collect_csv_tbl,
+    collate_spank_options = collate_spank_options,
     convert_MiB = convert_MiB,
     slurm_error = slurm_error,
     slurm_errorf = slurm_errorf,
