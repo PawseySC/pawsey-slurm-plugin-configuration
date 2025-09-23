@@ -17,29 +17,6 @@
 local git_date = '$Date$'
 local git_revision = '$Revision$'
 
--- Access constraints mapping to partition
-local constraints_mapping = {
-    askaprt = {
-        askaprt = 'askaprt'
-    },
-    copy = {
-        copy    = 'copy'
-    },
-    cpu = {
-        debug   = 'debug',
-        highmem = 'highmem',
-        work    = 'work'
-    },
-    gpu = {
-        debug   = 'gpu-dev',
-        highmem = 'gpu-highmem',
-        work    = 'gpu'
-    },
-    ['mwa-asvocopy'] = {
-        ['mwa-asvocopy'] = 'mwa-asvocopy'
-    }
-}
-
 --[[
     tokenize(str, pattern, max_tokens)
 
@@ -160,34 +137,6 @@ end
 
 local function get_default_partition_or_env()
     return os.getenv('SLURM_JOB_PARTITION') or get_default_partition()
-end
-
--- Obtain the derived partition from the provided options
--- Normally this will just be the partition value from the options or the
--- default partition. For the acceptance partition, the provided constraints
--- are used to derive which partition type they match
-
-local function get_derived_partition(options)
-    local partition = options.partition or get_default_partition_or_env()
-    if partition == 'acceptance' then
-        local constraints = options.constraint ~= nil and tokenize(options.constraint, ',') or {}
-        -- no constraints, just return the partition from options
-        if #constraints == 0 then
-            return partition
-        end
-
-        for tkey, tvalue in pairs(constraints_mapping) do
-            if existsIn(constraints, tkey) then
-                for ckey, partition in pairs(tvalue) do
-                    if existsIn(constraints, ckey) then
-                        return partition
-                    end
-                end
-            end
-        end
-    end
-
-    return partition
 end
 
 -- Parse slurm strings of the form 'key=value,key=value,...' to table.
@@ -327,6 +276,55 @@ local function collate_spank_options(opt_tbl)
     return collated
 end
 
+-- When the partition is the acceptance partition, the effective partition for
+-- the purposes of cli-filter processing is determined by the supplied
+-- constraints.
+--
+-- The acceptance_mapping table maps a constraint or a pair of constraints (as
+-- given by the first and second-level keys of the table) to a partition name.
+-- That partition name is chosen as the effective partition if that constraint
+-- or pair of constraints constitutes a subset of the supplied set of
+-- constraints given on the command line.
+
+local acceptance_mapping = {
+    askaprt = {
+        askaprt = 'askaprt'
+    },
+    copy = {
+        copy    = 'copy'
+    },
+    cpu = {
+        debug   = 'debug',
+        highmem = 'highmem',
+        work    = 'work'
+    },
+    gpu = {
+        debug   = 'gpu-dev',
+        highmem = 'gpu-highmem',
+        work    = 'gpu'
+    },
+    ['mwa-asvocopy'] = {
+        ['mwa-asvocopy'] = 'mwa-asvocopy'
+    }
+}
+
+local function effective_acceptance_partition(constraint_argument)
+    if constraint_argument == nil or acceptance_mapping == nil then return nil end
+
+    local constraints = tokenize(constraint_argument, ',')
+    for tkey, tvalue in pairs(acceptance_mapping) do
+        if existsIn(constraints, tkey) then
+            for ckey, cvalue in pairs(tvalue) do
+                if existsIn(constraints, ckey) then
+                    return cvalue
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
 -- Slurm CLI filter interface functions:
 
 function slurm_cli_setup_defaults(options, early)
@@ -391,7 +389,7 @@ function slurm_cli_pre_submit(options, offset)
         not is_unset(options['cpus-per-task']) or not is_unset(options['cpus-per-gpu']) or
         not is_unset(options['cores-per-socket'])
 
-    -- have any gpu resrouce options been passed?
+    -- have any gpu resource options been passed?
     local has_explicit_gpu_request =
         not is_unset(gres_options.gpu) or not is_unset(options['gpus']) or
         not is_unset(options['gpus-per-node']) or not is_unset(options['gpus-per-task'])
@@ -405,7 +403,9 @@ function slurm_cli_pre_submit(options, offset)
     local has_gpu_power_request = spank_options['gpu-srange'] ~= nil or spank_options['gpu-power-cap'] ~= nil
 
     local is_node_exclusive = options['exclusive'] == 'exclusive' -- disregard 'user', 'mcs' possibilities.
-    local partition = get_derived_partition(options)
+
+    local partition = options['partition'] or get_default_partition_or_env()
+    if partition == 'acceptance' then partition = effective_acceptance_partition(options.constraint) or partition end
 
     if not is_gpu_partition(partition) and not is_excepted_partition(partition) then
         -- Non-gpu partition path:
@@ -531,7 +531,7 @@ return {
     slurm_debugf = slurm_debugf,
     get_node_gres = get_node_gres,
     get_default_partition_or_env = get_default_partition_or_env,
-    get_derived_partition = get_derived_partition,
+    effective_acceptance_partition = effective_acceptance_partition,
     parse_partition_info_str = parse_partition_info_str,
     get_partition_info = get_partition_info,
 }

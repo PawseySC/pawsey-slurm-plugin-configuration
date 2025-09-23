@@ -300,48 +300,32 @@ function T.test_get_default_partition_or_env()
     assert(eq(nil, result))
 end
 
-function T.test_get_derived_partition()
-    local get_derived_partition = clif_functions.get_derived_partition
+function T.test_effective_acceptance_partition()
+    local effective_acceptance_partition = clif_functions.effective_acceptance_partition
     local eq = lunit.test_eq_v
 
-    local mock_acceptance_with_askaprt_constraints = {partition = 'acceptance', constraint = 'askaprt'}
-    local mock_acceptance_with_copy_constraints = {partition = 'acceptance', constraint = 'copy'}
-    local mock_acceptance_with_copy_constraints = {partition = 'acceptance', constraint = 'copy'}
-    local mock_acceptance_with_debug_cpu_constraints = {partition = 'acceptance', constraint = 'cpu,debug'}
-    local mock_acceptance_with_debug_gpu_constraints = {partition = 'acceptance', constraint = 'gpu,debug'}
-    local mock_acceptance_with_highmem_cpu_constraints = {partition = 'acceptance', constraint = 'cpu,highmem'}
-    local mock_acceptance_with_highmem_gpu_constraints = {partition = 'acceptance', constraint = 'gpu,highmem'}
-    local mock_acceptance_with_mwa_asvocopy_constraints = {partition = 'acceptance', constraint = 'mwa-asvocopy'}
-    local mock_acceptance_with_work_cpu_constraints = {partition = 'acceptance', constraint = 'cpu,work'}
-    local mock_acceptance_with_work_gpu_constraints = {partition = 'acceptance', constraint = 'gpu,work'}
-    local mock_askaprt_partition = {partition = 'askaprt'}
-    local mock_copy_partition = {partition = 'copy'}
-    local mock_debug_partition = {partition = 'debug'}
-    local mock_gpu_dev_partition = {partition = 'gpu-dev'}
-    local mock_gpu_highmem_partition = {partition = 'gpu-highmem'}
-    local mock_gpu_partition = {partition = 'gpu'}
-    local mock_highmem_partition = {partition = 'highmem'}
-    local mock_mwa_asvocopy_partition = {partition = 'mwa-asvocopy'}
-    local mock_work_partition = {partition = 'work'}
-
-    assert(eq('askaprt', get_derived_partition(mock_acceptance_with_askaprt_constraints)))
-    assert(eq('askaprt', get_derived_partition(mock_askaprt_partition)))
-    assert(eq('copy', get_derived_partition(mock_acceptance_with_copy_constraints)))
-    assert(eq('copy', get_derived_partition(mock_copy_partition)))
-    assert(eq('debug', get_derived_partition(mock_acceptance_with_debug_cpu_constraints)))
-    assert(eq('debug', get_derived_partition(mock_debug_partition)))
-    assert(eq('gpu', get_derived_partition(mock_acceptance_with_work_gpu_constraints)))
-    assert(eq('gpu', get_derived_partition(mock_gpu_partition)))
-    assert(eq('gpu-dev', get_derived_partition(mock_acceptance_with_debug_gpu_constraints)))
-    assert(eq('gpu-dev', get_derived_partition(mock_gpu_dev_partition)))
-    assert(eq('gpu-highmem', get_derived_partition(mock_acceptance_with_highmem_gpu_constraints)))
-    assert(eq('gpu-highmem', get_derived_partition(mock_gpu_highmem_partition)))
-    assert(eq('highmem', get_derived_partition(mock_acceptance_with_highmem_cpu_constraints)))
-    assert(eq('highmem', get_derived_partition(mock_highmem_partition)))
-    assert(eq('mwa-asvocopy', get_derived_partition(mock_acceptance_with_mwa_asvocopy_constraints)))
-    assert(eq('mwa-asvocopy', get_derived_partition(mock_mwa_asvocopy_partition)))
-    assert(eq('work', get_derived_partition(mock_acceptance_with_work_cpu_constraints)))
-    assert(eq('work', get_derived_partition(mock_work_partition)))
+    local mock_acceptance_with_askaprt_constraints = 'askaprt'
+    local mock_acceptance_with_copy_constraints = 'copy'
+    local mock_acceptance_with_debug_cpu_constraints = 'cpu,debug'
+    local mock_acceptance_with_debug_gpu_constraints = 'gpu,debug'
+    local mock_acceptance_with_highmem_cpu_constraints = 'cpu,highmem'
+    local mock_acceptance_with_highmem_gpu_constraints = 'gpu,highmem'
+    local mock_acceptance_with_mwa_asvocopy_constraints = 'mwa-asvocopy'
+    local mock_acceptance_with_work_cpu_constraints = 'cpu,work'
+    local mock_acceptance_with_work_gpu_constraints = 'gpu,work'
+    local mock_acceptance_with_invalid_constraints = 'foo,bar,baz'
+    local mock_acceptance_with_missing_constraints = nil
+    assert(eq('askaprt', effective_acceptance_partition(mock_acceptance_with_askaprt_constraints)))
+    assert(eq('copy', effective_acceptance_partition(mock_acceptance_with_copy_constraints)))
+    assert(eq('debug', effective_acceptance_partition(mock_acceptance_with_debug_cpu_constraints)))
+    assert(eq('gpu', effective_acceptance_partition(mock_acceptance_with_work_gpu_constraints)))
+    assert(eq('gpu-dev', effective_acceptance_partition(mock_acceptance_with_debug_gpu_constraints)))
+    assert(eq('gpu-highmem', effective_acceptance_partition(mock_acceptance_with_highmem_gpu_constraints)))
+    assert(eq('highmem', effective_acceptance_partition(mock_acceptance_with_highmem_cpu_constraints)))
+    assert(eq('mwa-asvocopy', effective_acceptance_partition(mock_acceptance_with_mwa_asvocopy_constraints)))
+    assert(eq('work', effective_acceptance_partition(mock_acceptance_with_work_cpu_constraints)))
+    assert(eq(nil, effective_acceptance_partition(mock_acceptance_with_invalid_constraints)))
+    assert(eq(nil, effective_acceptance_partition(mock_acceptance_with_missing_constraints)))
 end
 
 function T.test_get_partition_info()
