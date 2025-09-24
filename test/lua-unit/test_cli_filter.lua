@@ -106,6 +106,18 @@ function T.test_tokenize()
     assert(eq({'a', 'b', 'c=d'}, tokenize('a=b=c=d', '=', 3)))
 end
 
+function T.test_existsIn()
+    local existsIn = clif_functions.existsIn
+    local eq = lunit.test_eq_v
+
+    assert(eq(false, existsIn({}, '123')))
+    assert(eq(true, existsIn({'abc'}, 'abc')))
+    assert(eq(true, existsIn({'123', 'abc', '*()'}, '123')))
+    assert(eq(true, existsIn({'123', 'abc', '*()'}, 'abc')))
+    assert(eq(true, existsIn({'123', 'abc', '*()'}, '*()')))
+    assert(eq(false, existsIn({'123', 'abc', '*()'}, '456')))
+end
+
 function T.test_parse_csv_tbl()
     local parse_csv_tbl = clif_functions.parse_csv_tbl
     local eq = lunit.test_eq_v
@@ -286,6 +298,34 @@ function T.test_get_default_partition_or_env()
     mock_show_partition_output_tbl.work = saved
 
     assert(eq(nil, result))
+end
+
+function T.test_effective_acceptance_partition()
+    local effective_acceptance_partition = clif_functions.effective_acceptance_partition
+    local eq = lunit.test_eq_v
+
+    local mock_acceptance_with_askaprt_constraints = 'askaprt'
+    local mock_acceptance_with_copy_constraints = 'copy'
+    local mock_acceptance_with_debug_cpu_constraints = 'cpu,debug'
+    local mock_acceptance_with_debug_gpu_constraints = 'gpu,debug'
+    local mock_acceptance_with_highmem_cpu_constraints = 'cpu,highmem'
+    local mock_acceptance_with_highmem_gpu_constraints = 'gpu,highmem'
+    local mock_acceptance_with_mwa_asvocopy_constraints = 'mwa-asvocopy'
+    local mock_acceptance_with_work_cpu_constraints = 'cpu,work'
+    local mock_acceptance_with_work_gpu_constraints = 'gpu,work'
+    local mock_acceptance_with_invalid_constraints = 'foo,bar,baz'
+    local mock_acceptance_with_missing_constraints = nil
+    assert(eq('askaprt', effective_acceptance_partition(mock_acceptance_with_askaprt_constraints)))
+    assert(eq('copy', effective_acceptance_partition(mock_acceptance_with_copy_constraints)))
+    assert(eq('debug', effective_acceptance_partition(mock_acceptance_with_debug_cpu_constraints)))
+    assert(eq('gpu', effective_acceptance_partition(mock_acceptance_with_work_gpu_constraints)))
+    assert(eq('gpu-dev', effective_acceptance_partition(mock_acceptance_with_debug_gpu_constraints)))
+    assert(eq('gpu-highmem', effective_acceptance_partition(mock_acceptance_with_highmem_gpu_constraints)))
+    assert(eq('highmem', effective_acceptance_partition(mock_acceptance_with_highmem_cpu_constraints)))
+    assert(eq('mwa-asvocopy', effective_acceptance_partition(mock_acceptance_with_mwa_asvocopy_constraints)))
+    assert(eq('work', effective_acceptance_partition(mock_acceptance_with_work_cpu_constraints)))
+    assert(eq(nil, effective_acceptance_partition(mock_acceptance_with_invalid_constraints)))
+    assert(eq(nil, effective_acceptance_partition(mock_acceptance_with_missing_constraints)))
 end
 
 function T.test_get_partition_info()
