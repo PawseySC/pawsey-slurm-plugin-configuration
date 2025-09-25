@@ -65,6 +65,17 @@ local function tokenize(str, pattern, max_tokens)
     return tokens
 end
 
+-- Test if a value exists in an array
+
+local function existsIn(array, value)
+    for i=1, #array do
+        if array[i] == value then
+            return true
+        end
+    end
+    return false
+end
+
 -- Wrappers for slurm logging
 
 local function slurm_error(msg)
@@ -249,6 +260,55 @@ local function convert_MiB(memory)
     if not scale or not memory then return nil else return memory * scale end
 end
 
+-- When the partition is the acceptance partition, the effective partition for
+-- the purposes of cli-filter processing is determined by the supplied
+-- constraints.
+--
+-- The acceptance_mapping table maps a constraint or a pair of constraints (as
+-- given by the first and second-level keys of the table) to a partition name.
+-- That partition name is chosen as the effective partition if that constraint
+-- or pair of constraints constitutes a subset of the supplied set of
+-- constraints given on the command line.
+
+local acceptance_mapping = {
+    askaprt = {
+        askaprt = 'askaprt'
+    },
+    copy = {
+        copy    = 'copy'
+    },
+    cpu = {
+        debug   = 'debug',
+        highmem = 'highmem',
+        work    = 'work'
+    },
+    gpu = {
+        debug   = 'gpu-dev',
+        highmem = 'gpu-highmem',
+        work    = 'gpu'
+    },
+    ['mwa-asvocopy'] = {
+        ['mwa-asvocopy'] = 'mwa-asvocopy'
+    }
+}
+
+local function effective_acceptance_partition(constraint_argument)
+    if constraint_argument == nil or acceptance_mapping == nil then return nil end
+
+    local constraints = tokenize(constraint_argument, ',')
+    for tkey, tvalue in pairs(acceptance_mapping) do
+        if existsIn(constraints, tkey) then
+            for ckey, cvalue in pairs(tvalue) do
+                if existsIn(constraints, ckey) then
+                    return cvalue
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
 -- Slurm CLI filter interface functions:
 
 function slurm_cli_setup_defaults(options, early)
@@ -310,7 +370,7 @@ function slurm_cli_pre_submit(options, offset)
         not is_unset(options['cpus-per-task']) or not is_unset(options['cpus-per-gpu']) or
         not is_unset(options['cores-per-socket'])
 
-    -- have any gpu resrouce options been passed?
+    -- have any gpu resource options been passed?
     local has_explicit_gpu_request =
         not is_unset(gres_options.gpu) or not is_unset(options['gpus']) or
         not is_unset(options['gpus-per-node']) or not is_unset(options['gpus-per-task'])
@@ -321,7 +381,9 @@ function slurm_cli_pre_submit(options, offset)
         options['mem-per-cpu'] ~= nil or options['mem-per-gpu'] ~= nil or options['mem'] ~=nil and not has_all_mem_request
 
     local is_node_exclusive = options['exclusive'] == 'exclusive' -- disregard 'user', 'mcs' possibilities.
+
     local partition = options['partition'] or get_default_partition_or_env()
+    if partition == 'acceptance' then partition = effective_acceptance_partition(options.constraint) or partition end
 
     if not is_gpu_partition(partition) and not is_excepted_partition(partition) then
         -- Non-gpu partition path: compute correct mem-per-cpu value from available memory and threads-per-core option
@@ -423,6 +485,7 @@ end
 -- return table of local functions for unit testing
 return {
     tokenize = tokenize,
+    existsIn = existsIn,
     parse_csv_tbl = parse_csv_tbl,
     collect_csv_tbl = collect_csv_tbl,
     convert_MiB = convert_MiB,
@@ -432,6 +495,7 @@ return {
     slurm_debugf = slurm_debugf,
     get_node_gres = get_node_gres,
     get_default_partition_or_env = get_default_partition_or_env,
+    effective_acceptance_partition = effective_acceptance_partition,
     parse_partition_info_str = parse_partition_info_str,
     get_partition_info = get_partition_info,
 }
