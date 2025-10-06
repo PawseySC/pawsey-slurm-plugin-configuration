@@ -313,6 +313,7 @@ function T.test_effective_acceptance_partition()
     local mock_acceptance_with_mwa_asvocopy_constraints = 'mwa-asvocopy'
     local mock_acceptance_with_work_cpu_constraints = 'cpu,work'
     local mock_acceptance_with_work_gpu_constraints = 'gpu,work'
+    local mock_acceptance_with_quantum_gpu_constraints = 'gh200,quantum'
     local mock_acceptance_with_invalid_constraints = 'foo,bar,baz'
     local mock_acceptance_with_missing_constraints = nil
     assert(eq('askaprt', effective_acceptance_partition(mock_acceptance_with_askaprt_constraints)))
@@ -324,6 +325,7 @@ function T.test_effective_acceptance_partition()
     assert(eq('highmem', effective_acceptance_partition(mock_acceptance_with_highmem_cpu_constraints)))
     assert(eq('mwa-asvocopy', effective_acceptance_partition(mock_acceptance_with_mwa_asvocopy_constraints)))
     assert(eq('work', effective_acceptance_partition(mock_acceptance_with_work_cpu_constraints)))
+    assert(eq('quantum', effective_acceptance_partition(mock_acceptance_with_quantum_gh200_constraints)))
     assert(eq(nil, effective_acceptance_partition(mock_acceptance_with_invalid_constraints)))
     assert(eq(nil, effective_acceptance_partition(mock_acceptance_with_missing_constraints)))
 end
@@ -334,11 +336,15 @@ function T.test_get_partition_info()
 
     local pinfo_work = get_partition_info('work')
     local pinfo_gpu = get_partition_info('gpu')
+    local pinfo_quantum = get_partition_info('quantum')
 
     assert(eq('4', pinfo_gpu.TotalNodes))
     assert(eq('8', pinfo_work.TotalNodes))
+    assert(eq('2', pinfo_quantum.TotalNodes))
 
     assert(eq({ DefMemPerGPU = '29440' }, pinfo_gpu.JobDefaults))
+    -- quantum partition GH200 superchips have 119 GiB of LLDDR memory per superchip. 
+    assert(eq({ DefMemPerGPU = '120832' }, pinfo_quantum.JobDefaults))
     assert(eq({}, pinfo_work.JobDefaults))
 
     assert(eq({ cpu = '512', mem = '980000M', node = '4', billing = '2048', ['gres/gpu'] = '32' }, pinfo_gpu.TRES))
@@ -354,16 +360,19 @@ function T.test_get_node_gres()
 
     local ngres_work = get_node_gres('work')
     local ngres_gpu = get_node_gres('gpu')
+    local ngres_quantum = get_node_gres('quantum')
     local ngres_foo = get_node_gres('foo')
 
     assert(eq({}, ngres_work))
 
     assert(eq(nil, ngres_work.gpu))
     assert(eq('8(S:0-7)', ngres_gpu.gpu))
+    assert(eq('4(S:0-3)', ngres_quantum.gpu))
     assert(eq(nil, ngres_foo.gpu))
 
     assert(eq(nil, ngres_work.tmp))
     assert(eq('3500G', ngres_gpu.tmp))
+    assert(eq('3500G', ngres_quantum.tmp))
     assert(eq('2T', ngres_foo.tmp))
 end
 
@@ -490,6 +499,34 @@ function T.test_cli_sets_memory()
 
     options = { partition = 'gpu', exclusive = 'exclusive', mem = '500M'}
     assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+
+    -- if partition is quantum, also expect no memory mangling
+    options = { partition = 'quantum', gpus = '1'}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+    assert(eq(nil, options['mem-per-gpu']))
+    assert(eq(nil, options['mem-per-cpu']))
+    assert(eq(nil, options['mem']))
+
+    options = { partition = 'quantum', exclusive = 'exclusive' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+    assert(eq(nil, options['mem-per-gpu']))
+    assert(eq(nil, options['mem-per-cpu']))
+    assert(eq(nil, options['mem']))
+
+    -- if partition is quantum, expect an error if memory request
+    options = { partition = 'quantum', gpus = '1', mem = '500M'}
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    options = { partition = 'quantum', gpus = '1', ['mem-per-gpu'] = '500M'}
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    options = { partition = 'quantum', gpus = '1', ['mem-per-cpu'] = '500M'}
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    options = { partition = 'quantum', exclusive = 'exclusive', mem = '500M'}
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
 end
 
 function T.test_cli_srun_requires_gpu()
@@ -546,6 +583,50 @@ function T.test_cli_srun_requires_gpu()
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
     mock_unset('SLURM_JOB_PARTITION')
+
+    -- quantum partition
+    mock_unset('SLURM_JOB_PARTITION')
+    options = { type = 'srun', partition = 'quantum', gpus = '2' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'quantum', gres = 'gres/gpu:2' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'quantum', gres = 'gres/tmp:100G,gres/gpu:2' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'quantum', gres = 'gres/tmp:100G' }
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'quantum', gres = 'gres/gpu:0' }
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'quantum', ['gpus-per-node'] = '2' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'quantum', ['gpus-per-task'] = '2' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'quantum' }
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    mock_setenv('SLURM_JOB_PARTITION', 'quantum')
+    options = { type = 'srun', gpus = '2' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', gres = 'gres/gpu:2' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', ['gpus-per-node'] = '2' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', ['gpus-per-task'] = '2' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    mock_unset('SLURM_JOB_PARTITION')
 end
 
 function T.test_cli_tmp_requests()
@@ -572,6 +653,19 @@ function T.test_cli_tmp_requests()
 
     local gres_options = parse_csv_tbl(options['gres'], ':', 'gres/')
     assert(eq(max_allocatable_tmp, convert_MiB(gres_options.tmp)))
+
+    -- quantum partition
+    options = { partition = 'quantum', gres = 'gres/tmp:2600G,gres/gpu:2' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { partition = 'quantum', gres = 'gres/tmp:2700G,gres/gpu:2' }
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    -- Exclusive allocations always get the max tmp allocation.
+    options = { partition = 'quantum', exclusive = 'exclusive', gres = 'gres/tmp:2700G,gres/gpu:4' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+
 end
 
 function T.test_cli_srun_exclusive_gres()
@@ -584,6 +678,7 @@ function T.test_cli_srun_exclusive_gres()
 
     local max_allocatable_tmp = convert_MiB('3500G')
     local gpus_per_node = 8
+    local gpus_per_quantum_node = 4
 
     mock_unset('SLURM_JOB_PARTITION')
 
@@ -606,6 +701,31 @@ function T.test_cli_srun_exclusive_gres()
     -- Srun inside allocation: we should not be setting gres at all if not supplied.
     mock_setenv('SLURM_JOB_PARTITION', 'gpu')
     options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+    assert(eq(nil, options['gres']))
+
+    -- quantum partition
+    mock_unset('SLURM_JOB_PARTITION')
+
+    -- Just salloc/sbatch:
+    options = { partition = 'quantum', exclusive = 'exclusive' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    local gres_options = parse_csv_tbl(options['gres'], ':', 'gres/')
+    assert(eq(max_allocatable_tmp, convert_MiB(gres_options.tmp)))
+    assert(eq(gpus_per_quantum_node, tonumber(gres_options.gpu)))
+
+   -- Srun outside allocation:
+    options = { type = 'srun', partition = 'quantum', exclusive = 'exclusive' }
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    gres_options = parse_csv_tbl(options['gres'], ':', 'gres/')
+    assert(eq(max_allocatable_tmp, convert_MiB(gres_options.tmp)))
+    assert(eq(gpus_per_quantum_node, tonumber(gres_options.gpu)))
+
+    -- Srun inside allocation: we should not be setting gres at all if not supplied.
+    mock_setenv('SLURM_JOB_PARTITION', 'quantum')
+    options = { type = 'srun', partition = 'quantum', exclusive = 'exclusive' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
     assert(eq(nil, options['gres']))
 
@@ -663,6 +783,54 @@ function T.test_cli_gpu_power_options_filter()
     options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive', spank = { lua = { ['gpu-power-cap'] = '400' }}}
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
     mock_unset('SLURM_JOB_PARTITION')
+
+    -- quantum partition
+    -- need to get relevant values for the Blanka Peak blades
+    --[[
+    mock_unset('SLURM_JOB_PARTITION')
+
+    -- Missing --exclusive => fail:
+    options = { partition = 'quantum', spank = { lua = { ['gpu-srange'] = '800-900' }}}
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    options = { partition = 'gpu', spank = { lua = { ['gpu-power-cap'] = '400' }}}
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'gpu', spank = { lua = { ['gpu-srange'] = '800-900' }}}
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'gpu', spank = { lua = { ['gpu-power-cap'] = '400' }}}
+    assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
+
+    -- With exclusive is permitted:
+    options = { partition = 'gpu', exclusive = 'exclusive', spank = { lua = { ['gpu-srange'] = '800-900' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { partition = 'gpu', exclusive = 'exclusive', spank = { lua = { ['gpu-power-cap'] = '400' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', exclusive = 'exclusive', partition = 'gpu', spank = { lua = { ['gpu-srange'] = '800-900' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', exclusive = 'exclusive', partition = 'gpu', spank = { lua = { ['gpu-power-cap'] = '400' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    -- Srun within allocation cases should all succeed (spank plugin options are not reset for these srun invocations):
+    mock_setenv('SLURM_JOB_PARTITION', 'gpu')
+    options = { type = 'srun', partition = 'gpu', spank = { lua = { ['gpu-srange'] = '800-900' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'gpu', spank = { lua = { ['gpu-power-cap'] = '400' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive', spank = { lua = { ['gpu-srange'] = '800-900' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    options = { type = 'srun', partition = 'gpu', exclusive = 'exclusive', spank = { lua = { ['gpu-power-cap'] = '400' }}}
+    assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+    mock_unset('SLURM_JOB_PARTITION')
+    --]]
+
 end
 
 if not lunit.run_tests(T) then os.exit(1) end

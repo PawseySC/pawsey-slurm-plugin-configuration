@@ -306,6 +306,9 @@ local acceptance_mapping = {
     ['mwa-asvocopy'] = {
         ['mwa-asvocopy'] = 'mwa-asvocopy'
     }
+    quantum = {
+        quantum = 'quantum', 
+    }
 }
 
 local function effective_acceptance_partition(constraint_argument)
@@ -362,11 +365,12 @@ function slurm_cli_pre_submit(options, offset)
     slurm_debugf('SLURM_JOB_PARTITION=%s', os.getenv('SLURM_JOB_PARTITION') or '')
 
     local function is_gpu_partition(partition)
-        return partition == 'gpu' or partition == 'gpu-dev' or partition == 'gpu-highmem' or partition == 'mwa-gpu'
+        return partition == 'gpu' or partition == 'gpu-dev' or partition == 'gpu-highmem' or partition == 'mwa-gpu' or partition == 'quantum'
     end
 
     local function is_excepted_partition(partition)
-        return partition == 'acceptance' or partition == 'quantum'
+        return partition == 'acceptance'
+        -- or partition == 'quantum'
     end
 
     -- An unset option can be repesented by nil, the string "-2", the string "0", or the string "unset": check all of them.
@@ -471,7 +475,9 @@ function slurm_cli_pre_submit(options, offset)
         end
 
         local cpus_per_gpu = tonumber(tres.cpu)/tonumber(tres['gres/gpu'])
-        if tonumber(options['threads-per-core']) == 1 then cpus_per_gpu = cpus_per_gpu/2 end
+        -- quantum partition has grace arm cpus that have 1 thread per core, unlike the x86 milan cpus
+        if partition != 'quantum'
+            if tonumber(options['threads-per-core']) == 1 then cpus_per_gpu = cpus_per_gpu/2 end
 
         if has_explicit_cpu_request and not is_srun_in_allocation then
             return slurm_errorf('cannot explicitly request CPU resources for GPU allocation; each allocated GPU allocates %d cores', cpus_per_gpu)
