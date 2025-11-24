@@ -125,6 +125,12 @@ local function run_show_node_gres(partition)
     return os_execute('sinfo nodes -h -o %G -p '..partition..' 2>/dev/null')
 end
 
+-- Run sinfo nodes -h -o %Z; this function will be mocked in unit testing.
+local function run_show_node_pu_per_core(partition)
+    local pu_per_core_str, rc = os_execute('sinfo nodes -h -o %Z -p '..partition..' 2>/dev/null')
+    return tonumber(pu_per_core_str)
+end
+
 local function get_default_partition()
     local all_pinfo_str, rc = run_show_partition()
     if rc == 0 then
@@ -242,6 +248,13 @@ local function get_node_gres(partition)
     end
     return nil
 end
+
+local function get_pu_per_core(partition)
+    if not partition or partition == '' then return 2
+    local pu_per_core_str, rc = run_show_node_pu_per_core(partition)
+    return tonumber(pu_per_core_str)
+end
+
 
 local function convert_MiB(memory)
     local scale_tbl = {
@@ -476,8 +489,10 @@ function slurm_cli_pre_submit(options, offset)
 
         local cpus_per_gpu = tonumber(tres.cpu)/tonumber(tres['gres/gpu'])
         -- quantum partition has grace arm cpus that have 1 thread per core, unlike the x86 milan cpus
-        if partition != 'quantum'
-            if tonumber(options['threads-per-core']) == 1 then cpus_per_gpu = cpus_per_gpu/2 end
+        local pu_per_core = get_pu_per_core(partition)
+        -- if partition != 'quantum'
+        if pu_per_core > 1
+            if tonumber(options['threads-per-core']) == 1 then cpus_per_gpu = cpus_per_gpu/pu_per_core end
 
         if has_explicit_cpu_request and not is_srun_in_allocation then
             return slurm_errorf('cannot explicitly request CPU resources for GPU allocation; each allocated GPU allocates %d cores', cpus_per_gpu)
