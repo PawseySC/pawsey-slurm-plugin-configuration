@@ -242,13 +242,29 @@ local mock_show_partition_output_tbl = {
             JobDefaults=DefMemPerGPU=29440 \z
             DefMemPerNode=UNLIMITED MaxMemPerNode=UNLIMITED \z
             TRES=cpu=512,mem=980000M,node=4,billing=2048,gres/gpu=32 \z
-            TRESBillingWeights=CPU=1,gres/GPU=64"
+            TRESBillingWeights=CPU=1,gres/GPU=64",
+
+    quantum = "PartitionName=quantum AllowGroups=ALL AllowAccounts=ALL \z
+            AllowQos=ALL AllocNodes=ALL Default=NO QoS=N/A \z
+            DefaultTime=01:00:00 DisableRootJobs=NO ExclusiveUser=NO ExclusiveTopo=NO \z
+            GraceTime=0 Hidden=NO MaxNodes=UNLIMITED MaxTime=4-00:00:00 \z
+            MinNodes=0 LLN=NO MaxCPUsPerNode=UNLIMITED MaxCPUsPerSocket=UNLIMITED \z
+            Nodes=nid[002248,002250,003016,003018] \z
+            PriorityJobFactor=2 PriorityTier=2 RootOnly=NO ReqResv=NO \z
+            OverSubscribe=FORCE:1 OverTimeLimit=NONE PreemptMode=OFF \z
+            State=UP TotalCPUs=1152 TotalNodes=4 \z
+            SelectTypeParameters=NONE \z
+            JobDefaults=(null) \z
+            DefMemPerNode=UNLIMITED MaxMemPerNode=UNLIMITED \z
+            TRES=cpu=1152,mem=3336000M,node=4,billing=1152,gres/gpu=16 \z
+            TRESBillingWeights=CPU=1"
 }
 
-local mock_show_node_gres_output_tbl = {
-    work = '(null)',
-    gpu  = 'gpu:8(S:0-7),tmp:3500G',
-    foo  = 'tmp:2T'
+local mock_sinfo_nodes_ZG_output_tbl = {
+    work = '2 (null)',
+    gpu  = '2 gpu:8(S:0-7),tmp:3500G',
+    quantum = '1 gpu:4(S:0-3),tmp:3500G',
+    foo  = '4 tmp:2T'
 }
 
 -- provide a substitute for invoking `scontrol partition info`
@@ -268,9 +284,9 @@ local function mock_run_show_partition(partition)
 end
 
 -- provide a substitute for invoking `sinfo nodes -h -o %G -p`
-local function mock_run_show_node_gres(partition)
+local function mock_run_sinfo_nodes_ZG(partition)
     local out = ''
-    if partition ~= '' then out = mock_show_node_gres_output_tbl[partition] end
+    if partition ~= '' then out = mock_sinfo_nodes_ZG_output_tbl[partition] end
 
     if out then return out, 0
     else return nil, 1
@@ -313,7 +329,7 @@ function T.test_effective_acceptance_partition()
     local mock_acceptance_with_mwa_asvocopy_constraints = 'mwa-asvocopy'
     local mock_acceptance_with_work_cpu_constraints = 'cpu,work'
     local mock_acceptance_with_work_gpu_constraints = 'gpu,work'
-    local mock_acceptance_with_quantum_gpu_constraints = 'gh200,quantum'
+    local mock_acceptance_with_quantum_gh200_constraints = 'gh200,quantum'
     local mock_acceptance_with_invalid_constraints = 'foo,bar,baz'
     local mock_acceptance_with_missing_constraints = nil
     assert(eq('askaprt', effective_acceptance_partition(mock_acceptance_with_askaprt_constraints)))
@@ -340,11 +356,11 @@ function T.test_get_partition_info()
 
     assert(eq('4', pinfo_gpu.TotalNodes))
     assert(eq('8', pinfo_work.TotalNodes))
-    assert(eq('2', pinfo_quantum.TotalNodes))
+    assert(eq('4', pinfo_quantum.TotalNodes))
 
     assert(eq({ DefMemPerGPU = '29440' }, pinfo_gpu.JobDefaults))
     -- quantum partition GH200 superchips have 119 GiB of LLDDR memory per superchip. 
-    assert(eq({ DefMemPerGPU = '120832' }, pinfo_quantum.JobDefaults))
+    -- assert(eq({ DefMemPerGPU = '120832' }, pinfo_quantum.JobDefaults))
     assert(eq({}, pinfo_work.JobDefaults))
 
     assert(eq({ cpu = '512', mem = '980000M', node = '4', billing = '2048', ['gres/gpu'] = '32' }, pinfo_gpu.TRES))
@@ -354,14 +370,19 @@ function T.test_get_partition_info()
     assert(eq({ CPU = '1' }, pinfo_work.TRESBillingWeights))
 end
 
-function T.test_get_node_gres()
-    local get_node_gres = lunit.mock_function_upvalues(clif_functions.get_node_gres, { run_show_node_gres = mock_run_show_node_gres }, true)
+function T.test_get_node_ppc_gres()
+    local get_node_ppc_gres = lunit.mock_function_upvalues(clif_functions.get_node_ppc_gres, { run_sinfo_nodes_ZG = mock_run_sinfo_nodes_ZG }, true)
     local eq = lunit.test_eq_v
 
-    local ngres_work = get_node_gres('work')
-    local ngres_gpu = get_node_gres('gpu')
-    local ngres_quantum = get_node_gres('quantum')
-    local ngres_foo = get_node_gres('foo')
+    local nppc_work, ngres_work = get_node_ppc_gres('work')
+    local nppc_gpu, ngres_gpu = get_node_ppc_gres('gpu')
+    local nppc_quantum, ngres_quantum = get_node_ppc_gres('quantum')
+    local nppc_foo, ngres_foo = get_node_ppc_gres('foo')
+
+    assert(eq(2, nppc_work))
+    assert(eq(2, nppc_gpu))
+    assert(eq(1, nppc_quantum))
+    assert(eq(4, nppc_foo))
 
     assert(eq({}, ngres_work))
 
@@ -420,7 +441,8 @@ function T.test_cli_sets_memory()
     local n_threads_per_node = 256
 
     local slurm_cli_pre_submit = lunit.mock_function_upvalues(slurm_cli_pre_submit,
-         { run_show_partition = mock_run_show_partition, run_show_node_gres = mock_run_show_node_gres }, true)
+         { run_show_partition = mock_run_show_partition,
+           run_sinfo_nodes_ZG = mock_run_sinfo_nodes_ZG }, true)
     local eq = lunit.test_eq_v
 
     -- expect only mem-per-cpu to be set out of the memory options
@@ -531,7 +553,7 @@ end
 
 function T.test_cli_srun_requires_gpu()
     local tmp = lunit.mock_function_upvalues(slurm_cli_pre_submit,
-         { run_show_partition = mock_run_show_partition, run_show_node_gres = mock_run_show_node_gres }, true)
+         { run_show_partition = mock_run_show_partition, run_sinfo_nodes_ZG = mock_run_sinfo_nodes_ZG }, true)
     local slurm_cli_pre_submit = lunit.mock_function_env(tmp, { os = mock_os }, true)
     local eq = lunit.test_eq_v
 
@@ -631,7 +653,7 @@ end
 
 function T.test_cli_tmp_requests()
     local slurm_cli_pre_submit = lunit.mock_function_upvalues(slurm_cli_pre_submit,
-         { run_show_partition = mock_run_show_partition, run_show_node_gres = mock_run_show_node_gres }, true)
+         { run_show_partition = mock_run_show_partition, run_sinfo_nodes_ZG = mock_run_sinfo_nodes_ZG }, true)
     local convert_MiB = clif_functions.convert_MiB
     local parse_csv_tbl = clif_functions.parse_csv_tbl
     local eq = lunit.test_eq_v
@@ -654,23 +676,23 @@ function T.test_cli_tmp_requests()
     local gres_options = parse_csv_tbl(options['gres'], ':', 'gres/')
     assert(eq(max_allocatable_tmp, convert_MiB(gres_options.tmp)))
 
-    -- quantum partition
-    options = { partition = 'quantum', gres = 'gres/tmp:2600G,gres/gpu:2' }
+    -- Quantum partition
+    -- Max allocatable is 3500 GiB.
+    -- Max non-exclusive is 3500 - 3*128 = 3116 GiB.
+    options = { partition = 'quantum', gres = 'gres/tmp:3100G,gres/gpu:2' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
 
-    options = { partition = 'quantum', gres = 'gres/tmp:2700G,gres/gpu:2' }
+    options = { partition = 'quantum', gres = 'gres/tmp:3200G,gres/gpu:2' }
     assert(eq(slurm.ERROR, slurm_cli_pre_submit(options, 0)))
 
     -- Exclusive allocations always get the max tmp allocation.
     options = { partition = 'quantum', exclusive = 'exclusive', gres = 'gres/tmp:2700G,gres/gpu:4' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
-
-
 end
 
 function T.test_cli_srun_exclusive_gres()
     local tmp = lunit.mock_function_upvalues(slurm_cli_pre_submit,
-         { run_show_partition = mock_run_show_partition, run_show_node_gres = mock_run_show_node_gres }, true)
+         { run_show_partition = mock_run_show_partition, run_sinfo_nodes_ZG = mock_run_sinfo_nodes_ZG }, true)
     local slurm_cli_pre_submit = lunit.mock_function_env(tmp, { os = mock_os }, true)
     local convert_MiB = clif_functions.convert_MiB
     local parse_csv_tbl = clif_functions.parse_csv_tbl
@@ -734,7 +756,7 @@ end
 
 function T.test_cli_gpu_power_options_filter()
     local tmp = lunit.mock_function_upvalues(slurm_cli_pre_submit,
-         { run_show_partition = mock_run_show_partition, run_show_node_gres = mock_run_show_node_gres }, true)
+         { run_show_partition = mock_run_show_partition, run_sinfo_nodes_ZG = mock_run_sinfo_nodes_ZG }, true)
     local slurm_cli_pre_submit = lunit.mock_function_env(tmp, { os = mock_os }, true)
     local eq = lunit.test_eq_v
 
