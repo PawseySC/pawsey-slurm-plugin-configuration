@@ -65,6 +65,12 @@ local function tokenize(str, pattern, max_tokens)
     return tokens
 end
 
+-- Round float to nearest int (use string.format to avoid getting bogged down in edge cases).
+
+local function round_nearest(x)
+    return math.tointeger(string.format('%.0f', x))
+end
+
 -- Test if a value exists in an array
 
 local function existsIn(array, value)
@@ -444,7 +450,7 @@ function slurm_cli_pre_submit(options, offset)
                 local pu_per_node = math.floor(tonumber(pinfo.TotalCPUs)/tonumber(pinfo.TotalNodes))
                 options['mem'] = math.floor(mem_per_pu * pu_per_node)
             else
-                options['mem-per-cpu'] = mem_per_pu / threads_to_pu_ratio
+                options['mem-per-cpu'] = math.floor(mem_per_pu / threads_to_pu_ratio)
             end
         end
     elseif is_gpu_partition(partition) then
@@ -481,7 +487,7 @@ function slurm_cli_pre_submit(options, offset)
         end
 
         -- Note that quantum partition has grace arm cpus that have 1 thread per core, unlike the x86 milan cpus.
-        local cpus_per_gpu = tonumber(tres.cpu)/tonumber(tres['gres/gpu']) * threads_to_pu_ratio
+        local cpus_per_gpu = round_nearest(tonumber(tres.cpu)/tonumber(tres['gres/gpu']) * threads_to_pu_ratio)
 
         if has_explicit_cpu_request and not is_srun_in_allocation then
             return slurm_errorf('cannot explicitly request CPU resources for GPU allocation; each allocated GPU allocates %d cores', cpus_per_gpu)
@@ -512,7 +518,7 @@ function slurm_cli_pre_submit(options, offset)
             return slurm_errorf('non-exclusive GPU allocations may request at most %d GiB of NVMe tmp', non_exclusive_max_tmp_MiB/1024)
         end
 
-        options['cpus-per-gpu'] = math.floor(cpus_per_gpu)
+        options['cpus-per-gpu'] = cpus_per_gpu
 
         if is_node_exclusive and not is_srun_in_allocation then
             gres_options.gpu = gpus_per_node
