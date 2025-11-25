@@ -688,6 +688,9 @@ function T.test_cli_tmp_requests()
     -- Exclusive allocations always get the max tmp allocation.
     options = { partition = 'quantum', exclusive = 'exclusive', gres = 'gres/tmp:2700G,gres/gpu:4' }
     assert(eq(slurm.SUCCESS, slurm_cli_pre_submit(options, 0)))
+
+    local quantum_gres_options = parse_csv_tbl(options['gres'], ':', 'gres/')
+    assert(eq(max_allocatable_tmp, convert_MiB(quantum_gres_options.tmp)))
 end
 
 function T.test_cli_srun_exclusive_gres()
