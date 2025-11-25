@@ -65,6 +65,12 @@ local function tokenize(str, pattern, max_tokens)
     return tokens
 end
 
+-- Round float to nearest int (use string.format to avoid getting bogged down in edge cases).
+
+local function round_nearest(x)
+    return math.tointeger(string.format('%.0f', x))
+end
+
 -- Test if a value exists in an array
 
 local function existsIn(array, value)
@@ -120,9 +126,10 @@ local function run_show_partition(partition)
     return os_execute('scontrol show partition --all --oneliner '..(partition or '')..' 2>/dev/null')
 end
 
--- Run sinfo nodes -h -o %G; this function will be mocked in unit testing.
-local function run_show_node_gres(partition)
-    return os_execute('sinfo nodes -h -o %G -p '..partition..' 2>/dev/null')
+-- Run sinfo nodes -h -o "%Z %G"; this function will be mocked in unit testing.
+
+local function run_sinfo_nodes_ZG(partition)
+    return os_execute('sinfo nodes -h -o %Z\\ %G -p '..partition..' 2>/dev/null')
 end
 
 local function get_default_partition()
@@ -233,12 +240,13 @@ local function parse_node_gres_str(node_gres_str)
     end
 end
 
-local function get_node_gres(partition)
+local function get_node_ppc_gres(partition)
     if not partition or partition == '' then return nil end
-    local node_gres_str, rc = run_show_node_gres(partition)
+    local node_ZG_str, rc = run_sinfo_nodes_ZG(partition)
 
     if rc == 0 then
-        return parse_node_gres_str(node_gres_str)
+        local ZG  = tokenize(node_ZG_str, ' ', 2)
+        return tonumber(ZG[1]), parse_node_gres_str(ZG[2])
     end
     return nil
 end
@@ -305,6 +313,9 @@ local acceptance_mapping = {
     },
     ['mwa-asvocopy'] = {
         ['mwa-asvocopy'] = 'mwa-asvocopy'
+    },
+    quantum = {
+        quantum = 'quantum'
     }
 }
 
@@ -362,11 +373,12 @@ function slurm_cli_pre_submit(options, offset)
     slurm_debugf('SLURM_JOB_PARTITION=%s', os.getenv('SLURM_JOB_PARTITION') or '')
 
     local function is_gpu_partition(partition)
-        return partition == 'gpu' or partition == 'gpu-dev' or partition == 'gpu-highmem' or partition == 'mwa-gpu'
+        return partition == 'gpu' or partition == 'gpu-dev' or partition == 'gpu-highmem' or partition == 'mwa-gpu' or partition == 'quantum'
     end
 
     local function is_excepted_partition(partition)
-        return partition == 'acceptance' or partition == 'quantum'
+        return partition == 'acceptance'
+        -- or partition == 'quantum'
     end
 
     -- An unset option can be repesented by nil, the string "-2", the string "0", or the string "unset": check all of them.
@@ -384,28 +396,38 @@ function slurm_cli_pre_submit(options, offset)
     -- Are we in srun that's being invoked inside an allocation?
     local is_srun_in_allocation = options['type'] == 'srun' and os.getenv('SLURM_JOB_PARTITION') ~= nil
 
-    -- have any cpu resource options been passed?
+    -- Have any cpu resource options been passed?
     local has_explicit_cpu_request =
         not is_unset(options['cpus-per-task']) or not is_unset(options['cpus-per-gpu']) or
         not is_unset(options['cores-per-socket'])
 
-    -- have any gpu resource options been passed?
+    -- Have any gpu resource options been passed?
     local has_explicit_gpu_request =
         not is_unset(gres_options.gpu) or not is_unset(options['gpus']) or
         not is_unset(options['gpus-per-node']) or not is_unset(options['gpus-per-task'])
 
-    -- have any mem resource options been passed, excluding a request for all node memory?
+    -- Have any mem resource options been passed, excluding a request for all node memory?
     local has_all_mem_request = options['mem'] == "0?"
     local has_explicit_mem_request =
         options['mem-per-cpu'] ~= nil or options['mem-per-gpu'] ~= nil or options['mem'] ~= nil and not has_all_mem_request
 
-    -- have any gpu power options been supplied?
+    -- Have any gpu power options been supplied?
     local has_gpu_power_request = spank_options['gpu-srange'] ~= nil or spank_options['gpu-power-cap'] ~= nil
 
     local is_node_exclusive = options['exclusive'] == 'exclusive' -- disregard 'user', 'mcs' possibilities.
 
     local partition = options['partition'] or get_default_partition_or_env()
     if partition == 'acceptance' then partition = effective_acceptance_partition(options.constraint) or partition end
+
+    -- Retrieve node configutation on partition (pu-per-core, gres).
+    local node_pu_per_core, node_gres = get_node_ppc_gres(partition)
+    if node_pu_per_core == nil or node_gres == nil then return slurm_error("unable to retrieve node information") end
+
+    local threads_to_pu_ratio = 1
+    local opt_threads_per_core = tonumber(options['threads-per-core'])
+    if opt_threads_per_core and opt_threads_per_core > 0 then
+        threads_to_pu_ratio = opt_threads_per_core / node_pu_per_core
+    end
 
     if not is_gpu_partition(partition) and not is_excepted_partition(partition) then
         -- Non-gpu partition path:
@@ -416,22 +438,19 @@ function slurm_cli_pre_submit(options, offset)
         end
 
         -- Compute correct mem-per-cpu value from available memory and threads-per-core option if memory has not been
-        -- reqested explicitly.
+        -- reqested explicitly. 'pu' (Processing Unit) is used as the term to describe both hardware threads and what Slurm calls CPUs.
 
         if not has_explicit_mem_request then
             local pinfo = get_partition_info(partition)
             if pinfo == nil then return slurm_error("unable to retrieve partition information") end
 
-            local mem_per_hw_thread = math.floor(tonumber(pinfo.DefMemPerCPU))
+            local mem_per_pu = math.floor(tonumber(pinfo.DefMemPerCPU))
 
             if is_node_exclusive or has_all_mem_request then
-                local hw_threads_per_node = math.floor(tonumber(pinfo.TotalCPUs)/tonumber(pinfo.TotalNodes))
-                options['mem'] = math.floor(mem_per_hw_thread * hw_threads_per_node)
+                local pu_per_node = math.floor(tonumber(pinfo.TotalCPUs)/tonumber(pinfo.TotalNodes))
+                options['mem'] = math.floor(mem_per_pu * pu_per_node)
             else
-                local mem_scale = 1
-                if tonumber(options['threads-per-core']) == 1 then mem_scale = 2 end
-
-                options['mem-per-cpu'] = mem_per_hw_thread * mem_scale
+                options['mem-per-cpu'] = math.floor(mem_per_pu / threads_to_pu_ratio)
             end
         end
     elseif is_gpu_partition(partition) then
@@ -445,9 +464,6 @@ function slurm_cli_pre_submit(options, offset)
 
         local pinfo = get_partition_info(partition)
         if pinfo == nil then return slurm_error("unable to retrieve partition information") end
-
-        local node_gres = get_node_gres(partition)
-        if node_gres == nil then return slurm_error("unable to retrieve gpu partition node information") end
 
         local gpus_per_node = 0
         if node_gres.gpu then
@@ -470,8 +486,8 @@ function slurm_cli_pre_submit(options, offset)
             return slurm_error('unable to determine cpu to gpu ratio')
         end
 
-        local cpus_per_gpu = tonumber(tres.cpu)/tonumber(tres['gres/gpu'])
-        if tonumber(options['threads-per-core']) == 1 then cpus_per_gpu = cpus_per_gpu/2 end
+        -- Note that quantum partition has grace arm cpus that have 1 thread per core, unlike the x86 milan cpus.
+        local cpus_per_gpu = round_nearest(tonumber(tres.cpu)/tonumber(tres['gres/gpu']) * threads_to_pu_ratio)
 
         if has_explicit_cpu_request and not is_srun_in_allocation then
             return slurm_errorf('cannot explicitly request CPU resources for GPU allocation; each allocated GPU allocates %d cores', cpus_per_gpu)
@@ -502,7 +518,7 @@ function slurm_cli_pre_submit(options, offset)
             return slurm_errorf('non-exclusive GPU allocations may request at most %d GiB of NVMe tmp', non_exclusive_max_tmp_MiB/1024)
         end
 
-        options['cpus-per-gpu'] = math.floor(cpus_per_gpu)
+        options['cpus-per-gpu'] = cpus_per_gpu
 
         if is_node_exclusive and not is_srun_in_allocation then
             gres_options.gpu = gpus_per_node
@@ -529,7 +545,7 @@ return {
     slurm_errorf = slurm_errorf,
     slurm_debug = slurm_debug,
     slurm_debugf = slurm_debugf,
-    get_node_gres = get_node_gres,
+    get_node_ppc_gres = get_node_ppc_gres,
     get_default_partition_or_env = get_default_partition_or_env,
     effective_acceptance_partition = effective_acceptance_partition,
     parse_partition_info_str = parse_partition_info_str,
