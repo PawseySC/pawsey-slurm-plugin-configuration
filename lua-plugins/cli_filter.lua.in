@@ -322,7 +322,7 @@ local acceptance_mapping = {
 local function effective_acceptance_partition(constraint_argument)
     if constraint_argument == nil or acceptance_mapping == nil then return nil end
 
-    local constraints = tokenize(constraint_argument, ',')
+    local constraints = tokenize(constraint_argument, '&')
     for tkey, tvalue in pairs(acceptance_mapping) do
         if existsIn(constraints, tkey) then
             for ckey, cvalue in pairs(tvalue) do
