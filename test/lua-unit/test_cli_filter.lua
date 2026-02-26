@@ -322,15 +322,15 @@ function T.test_effective_acceptance_partition()
 
     local mock_acceptance_with_askaprt_constraints = 'askaprt'
     local mock_acceptance_with_copy_constraints = 'copy'
-    local mock_acceptance_with_debug_cpu_constraints = 'cpu,debug'
-    local mock_acceptance_with_debug_gpu_constraints = 'gpu,debug'
-    local mock_acceptance_with_highmem_cpu_constraints = 'cpu,highmem'
-    local mock_acceptance_with_highmem_gpu_constraints = 'gpu,highmem'
+    local mock_acceptance_with_debug_cpu_constraints = 'cpu&debug'
+    local mock_acceptance_with_debug_gpu_constraints = 'gpu&debug'
+    local mock_acceptance_with_highmem_cpu_constraints = 'cpu&highmem'
+    local mock_acceptance_with_highmem_gpu_constraints = 'gpu&highmem'
     local mock_acceptance_with_mwa_asvocopy_constraints = 'mwa-asvocopy'
-    local mock_acceptance_with_work_cpu_constraints = 'cpu,work'
-    local mock_acceptance_with_work_gpu_constraints = 'gpu,work'
-    local mock_acceptance_with_quantum_gh200_constraints = 'gh200,quantum'
-    local mock_acceptance_with_invalid_constraints = 'foo,bar,baz'
+    local mock_acceptance_with_work_cpu_constraints = 'cpu&work'
+    local mock_acceptance_with_work_gpu_constraints = 'gpu&work'
+    local mock_acceptance_with_quantum_gh200_constraints = 'gh200&quantum'
+    local mock_acceptance_with_invalid_constraints = 'foo&bar&baz'
     local mock_acceptance_with_missing_constraints = nil
     assert(eq('askaprt', effective_acceptance_partition(mock_acceptance_with_askaprt_constraints)))
     assert(eq('copy', effective_acceptance_partition(mock_acceptance_with_copy_constraints)))
